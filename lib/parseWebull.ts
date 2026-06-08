@@ -100,7 +100,7 @@ export function parseWebull(csvText: string): CompletedStockTrade[] {
   // Build final completed trades from groups
   const result: CompletedStockTrade[] = []
 
-  for (const { buyFill, trims } of trimGroups.values()) {
+  for (const { buyFill, trims } of Array.from(trimGroups.values())) {
     const totalQty = trims.reduce((s, t) => s + t.qty, 0)
     const totalPnl = trims.reduce((s, t) => s + t.pnl, 0)
     const totalSellValue = trims.reduce((s, t) => s + t.sellPrice * t.qty, 0)

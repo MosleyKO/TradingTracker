@@ -95,7 +95,7 @@ export function parseTOS(csvText: string): CompletedTrade[] {
         remaining--
       }
 
-      for (const [groupKey, { open, qty }] of matchGroups.entries()) {
+      for (const [groupKey, { open, qty }] of Array.from(matchGroups.entries())) {
         const pnl = (trade.price - open.price) * qty * 100
         const openKey = `${contractKey}|${open.execTime.getTime()}|${open.price}`
 
@@ -115,7 +115,7 @@ export function parseTOS(csvText: string): CompletedTrade[] {
   // Build final completed trades
   const result: CompletedTrade[] = []
 
-  for (const { open, trims } of tradeMap.values()) {
+  for (const { open, trims } of Array.from(tradeMap.values())) {
     const totalQty = trims.reduce((s, t) => s + t.qty, 0)
     const totalPnl = trims.reduce((s, t) => s + t.pnl, 0)
     const totalCloseValue = trims.reduce((s, t) => s + t.closePrice * t.qty, 0)
