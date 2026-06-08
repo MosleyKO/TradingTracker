@@ -25,10 +25,16 @@ export default function AuthPage() {
       if (error) setError(error.message)
       else router.push('/')
     } else {
-      const { data, error } = await supabase.auth.signUp({ email, password })
-      if (error) setError(error.message)
-      else if (data.session) router.push('/')
-      else setMessage('Account created — you can now sign in.')
+      const { error: signUpError } = await supabase.auth.signUp({ email, password })
+      if (signUpError) { setError(signUpError.message); setLoading(false); return }
+      // Auto sign in immediately after signup
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
+      if (signInError) {
+        setMode('login')
+        setMessage('Account created — please sign in.')
+      } else {
+        router.push('/')
+      }
     }
     setLoading(false)
   }
