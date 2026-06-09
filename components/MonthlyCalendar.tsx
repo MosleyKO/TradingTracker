@@ -18,11 +18,9 @@ function getBgColor(pnl: number, maxAbs: number): string {
   if (pnl === 0 || maxAbs === 0) return 'transparent'
   const intensity = Math.min(Math.abs(pnl) / maxAbs, 1)
   if (pnl > 0) {
-    const g = Math.round(80 + intensity * 121)
-    return `rgba(38, ${g}, 122, ${0.15 + intensity * 0.55})`
+    return `rgba(38, 201, 122, ${0.1 + intensity * 0.35})`
   } else {
-    const r = Math.round(150 + intensity * 74)
-    return `rgba(${r}, 60, 60, ${0.15 + intensity * 0.55})`
+    return `rgba(224, 92, 92, ${0.1 + intensity * 0.35})`
   }
 }
 
