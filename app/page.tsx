@@ -434,7 +434,7 @@ export default function Home() {
                   .sort((a, b) => b.pnl - a.pnl)
                 const max = Math.max(...tickers.map(t => Math.abs(t.pnl)), 1)
                 return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 260, overflowY: 'auto' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {tickers.map(t => (
                       <div key={t.sym} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <div style={{ width: 52, fontSize: 12, color: 'var(--text)', fontWeight: 600, flexShrink: 0 }}>{t.sym}</div>
