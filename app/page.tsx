@@ -7,7 +7,6 @@ import { parseWebull } from '@/lib/parseWebull'
 import { calcStats, Trade } from '@/lib/stats'
 import { createClient } from '@/lib/supabase'
 import EquityChart from '@/components/EquityChart'
-import RadarScore from '@/components/RadarScore'
 import MonthlyCalendar from '@/components/MonthlyCalendar'
 
 type Account = 'tos' | 'webull'
@@ -620,17 +619,12 @@ export default function Home() {
           {/* ════════════════════════════════════════════════
               ROW 4 — Score + Insights (same row)
           ════════════════════════════════════════════════ */}
-          <div style={{ display: 'flex', gap: 24, marginBottom: 24, alignItems: 'stretch' }}>
-            {/* Score — fixed width */}
-            <div style={{ width: 280, flexShrink: 0 }}>
-              <RadarScore stats={stats} />
+          {insights.length > 0 && (
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500, marginBottom: 12 }}>
+              Insights
             </div>
-            {/* Insights — fill remaining space */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>
-                Insights
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.max(insights.length, 1)}, 1fr)`, gap: 16, flex: 1 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${insights.length}, 1fr)`, gap: 16 }}>
                 {insights.map((ins, i) => (
                   <div key={i} className="panel" style={{ display: 'flex', alignItems: 'flex-start', gap: 14, padding: 20 }}>
                     <div style={{ width: 32, height: 32, borderRadius: 8, background: ins.positive ? 'rgba(38,201,122,0.12)' : 'rgba(224,92,92,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -658,9 +652,9 @@ export default function Home() {
                     </div>
                   </div>
                 ))}
-              </div>
             </div>
           </div>
+          )}
 
           {/* ════════════════════════════════════════════════
               ROW 5 — Trade Log
