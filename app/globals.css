@@ -282,3 +282,20 @@ body {
   margin-bottom: 8px;
   color: var(--text);
 }
+
+/* Subtle scrollbar for inner panels */
+.subtle-scroll {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.subtle-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.subtle-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.subtle-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}

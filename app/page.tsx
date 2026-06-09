@@ -42,11 +42,16 @@ export default function Home() {
   type SortDir = 'asc' | 'desc'
   const [sortKey, setSortKey] = useState<SortKey>('date')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
+  const [tosStartingBalance, setTosStartingBalance] = useState<number | null>(null)
+  const [webullStartingBalance, setWebullStartingBalance] = useState<number | null>(null)
+  const [balanceInput, setBalanceInput] = useState('')
+  const [editingBalance, setEditingBalance] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const router = useRouter()
   const supabase = createClient()
 
   const rawTrades = account === 'tos' ? tosTrades : webullTrades
+  const startingBalance = account === 'tos' ? tosStartingBalance : webullStartingBalance
 
   // Filtered trades based on date range
   const filteredTrades = useMemo(() => {
@@ -81,7 +86,7 @@ export default function Home() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push('/auth'); return }
       setUserEmail(user.email ?? null)
-      await loadTrades(user.id)
+      await Promise.all([loadTrades(user.id), loadSettings(user.id)])
       setLoadingData(false)
     }
     init()
@@ -98,6 +103,23 @@ export default function Home() {
     bestTrimPnl: r.best_trim_pnl ?? undefined,
     trims: r.trims ? r.trims.map((tr: any) => ({ ...tr, time: new Date(tr.time) })) : undefined,
   })
+
+  const loadSettings = async (userId: string) => {
+    const { data } = await supabase.from('user_settings').select('*').eq('user_id', userId).maybeSingle()
+    if (data) {
+      setTosStartingBalance(data.tos_starting_balance ?? null)
+      setWebullStartingBalance(data.webull_starting_balance ?? null)
+    }
+  }
+
+  const saveStartingBalance = async (value: number) => {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    const field = account === 'tos' ? 'tos_starting_balance' : 'webull_starting_balance'
+    await supabase.from('user_settings').upsert({ user_id: user.id, [field]: value }, { onConflict: 'user_id' })
+    if (account === 'tos') setTosStartingBalance(value)
+    else setWebullStartingBalance(value)
+  }
 
   const loadTrades = async (userId: string) => {
     const { data, error } = await supabase
@@ -256,9 +278,9 @@ export default function Home() {
     // Worst day to trade
     if (worstDay && worstDay.pnl < 0) {
       result.push({
-        icon: '⚠️',
+        icon: 'warning',
         title: 'Biggest Opportunity',
-        action: `Stop trading ${worstDay.day}s`,
+        action: `Avoid ${worstDay.day}s`,
         stat: fmt(worstDay.pnl),
         detail: `${worstDay.wins}W / ${worstDay.trades - worstDay.wins}L`,
         positive: false,
@@ -268,7 +290,7 @@ export default function Home() {
     if (tickerStats.length > 0) {
       const best = tickerStats[0]
       result.push({
-        icon: '🏆',
+        icon: 'trophy',
         title: 'Strongest Ticker',
         action: best.sym,
         stat: fmt(best.pnl),
@@ -279,7 +301,7 @@ export default function Home() {
     // Most consistent day
     if (bestDay) {
       result.push({
-        icon: '📅',
+        icon: 'calendar',
         title: 'Most Consistent Day',
         action: bestDay.day,
         stat: fmt(bestDay.pnl),
@@ -407,19 +429,68 @@ export default function Home() {
           ════════════════════════════════════════════════ */}
           <div className="panel" style={{ marginBottom: 24, display: 'flex', alignItems: 'stretch', gap: 0, padding: 0, overflow: 'hidden' }}>
             {/* Left: P&L summary */}
-            <div style={{ width: 220, flexShrink: 0, padding: 24, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6 }}>
+            <div style={{ width: 230, flexShrink: 0, padding: 24, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6 }}>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>
                 Net P&amp;L
               </div>
               <div style={{ fontSize: 36, fontWeight: 800, lineHeight: 1, color: stats.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
                 {fmt(stats.netPnl)}
               </div>
+              {/* Account Growth % */}
+              {startingBalance && startingBalance > 0 ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {(() => {
+                    const growth = (stats.netPnl / startingBalance) * 100
+                    return (
+                      <span style={{ fontSize: 13, fontWeight: 600, color: growth >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                        {growth >= 0 ? '+' : ''}{growth.toFixed(2)}% account growth
+                      </span>
+                    )
+                  })()}
+                  <button
+                    onClick={() => { setBalanceInput(String(startingBalance)); setEditingBalance(true) }}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1 }}
+                    title="Edit starting balance"
+                  >✎</button>
+                </div>
+              ) : (
+                !editingBalance ? (
+                  <button
+                    onClick={() => { setBalanceInput(''); setEditingBalance(true) }}
+                    style={{ background: 'none', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontSize: 12, padding: 0, textAlign: 'left', marginTop: 2 }}
+                  >+ Set starting balance</button>
+                ) : null
+              )}
+              {editingBalance && (
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2 }}>
+                  <input
+                    type="number"
+                    placeholder="e.g. 10000"
+                    value={balanceInput}
+                    onChange={e => setBalanceInput(e.target.value)}
+                    autoFocus
+                    style={{ width: 100, padding: '4px 8px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12 }}
+                  />
+                  <button
+                    onClick={async () => {
+                      const val = parseFloat(balanceInput)
+                      if (!isNaN(val) && val > 0) { await saveStartingBalance(val) }
+                      setEditingBalance(false)
+                    }}
+                    style={{ padding: '4px 10px', background: 'var(--blue)', border: 'none', borderRadius: 6, color: '#fff', fontSize: 12, cursor: 'pointer' }}
+                  >Save</button>
+                  <button
+                    onClick={() => setEditingBalance(false)}
+                    style={{ padding: '4px 8px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}
+                  >✕</button>
+                </div>
+              )}
               {periodPnl !== null && (
                 <div style={{ fontSize: 12, color: periodPnl >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 500 }}>
                   {periodPnl >= 0 ? '▲' : '▼'} {Math.abs(periodPnl).toFixed(1)}% vs prev period
                 </div>
               )}
-              <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>
                 {stats.tradeCount} trades
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
@@ -523,7 +594,7 @@ export default function Home() {
               {/* Ticker breakdown */}
               <div className="panel" style={{ flex: 1 }}>
                 <div className="panel-title">P&amp;L by Ticker</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div className="subtle-scroll" style={{ maxHeight: 220, display: 'flex', flexDirection: 'column', gap: 10 }}>
                   {(() => {
                     const max = Math.max(...tickerStats.map(t => Math.abs(t.pnl)), 1)
                     return tickerStats.map(t => (
@@ -557,7 +628,23 @@ export default function Home() {
               <div style={{ display: 'grid', gridTemplateColumns: `repeat(${insights.length}, 1fr)`, gap: 16 }}>
                 {insights.map((ins, i) => (
                   <div key={i} className="panel" style={{ display: 'flex', alignItems: 'flex-start', gap: 14, padding: 20 }}>
-                    <div style={{ fontSize: 22, lineHeight: 1, paddingTop: 2 }}>{ins.icon}</div>
+                    <div style={{ width: 32, height: 32, borderRadius: 8, background: ins.positive ? 'rgba(38,201,122,0.12)' : 'rgba(224,92,92,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      {ins.icon === 'warning' && (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--red)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                        </svg>
+                      )}
+                      {ins.icon === 'trophy' && (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="8 21 12 17 16 21"/><line x1="12" y1="17" x2="12" y2="11"/><path d="M7 4H4a2 2 0 0 0-2 2v1a5 5 0 0 0 5 5h10a5 5 0 0 0 5-5V6a2 2 0 0 0-2-2h-3"/><rect x="7" y="2" width="10" height="6" rx="1"/>
+                        </svg>
+                      )}
+                      {ins.icon === 'calendar' && (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+                        </svg>
+                      )}
+                    </div>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 4 }}>{ins.title}</div>
                       <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 2 }}>{ins.action}</div>
