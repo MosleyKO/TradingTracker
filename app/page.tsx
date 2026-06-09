@@ -8,7 +8,7 @@ import { calcStats, Trade } from '@/lib/stats'
 import { createClient } from '@/lib/supabase'
 import EquityChart from '@/components/EquityChart'
 import RadarScore from '@/components/RadarScore'
-import CalendarHeatmap from '@/components/CalendarHeatmap'
+import MonthlyCalendar from '@/components/MonthlyCalendar'
 
 type Account = 'tos' | 'webull'
 type Preset = 'today' | 'week' | 'month' | '3month' | 'year' | 'all' | 'custom'
@@ -62,6 +62,17 @@ export default function Home() {
   }, [rawTrades, preset, customStart, customEnd])
 
   const stats = useMemo(() => calcStats(filteredTrades), [filteredTrades])
+
+  // Calendar data — always uses ALL raw trades, independent of date filter
+  const calendarData = useMemo(() => {
+    const dayMap = new Map<string, { pnl: number; trades: number }>()
+    for (const t of rawTrades) {
+      const day = t.closeTime.toISOString().slice(0, 10)
+      const existing = dayMap.get(day) || { pnl: 0, trades: 0 }
+      dayMap.set(day, { pnl: existing.pnl + t.pnl, trades: existing.trades + 1 })
+    }
+    return Array.from(dayMap.entries()).map(([date, v]) => ({ date, ...v }))
+  }, [rawTrades])
   const hasData = rawTrades.length > 0
 
   // Check auth + load saved trades on mount
@@ -371,8 +382,8 @@ export default function Home() {
               <EquityChart data={stats.equityCurve} />
             </div>
             <div className="panel">
-              <div className="panel-title">Progress Tracker</div>
-              <CalendarHeatmap data={stats.calendarData} />
+              <div className="panel-title">Monthly P&amp;L Calendar</div>
+              <MonthlyCalendar data={calendarData} />
             </div>
           </div>
 
