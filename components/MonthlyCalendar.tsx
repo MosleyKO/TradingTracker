@@ -125,7 +125,7 @@ export default function MonthlyCalendar({ data }: Props) {
                     background: entry ? getBgColor(entry.pnl, maxAbs) : 'transparent',
                     border: isToday ? '1px solid var(--blue)' : '1px solid var(--border)',
                     opacity: isFuture || (isWeekend && !entry) ? 0.25 : 1,
-                    minHeight: 54,
+                    minHeight: 68,
                     display: 'flex',
                     flexDirection: 'column',
                     justifyContent: 'space-between',

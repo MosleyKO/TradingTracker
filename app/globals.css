@@ -178,7 +178,7 @@ body {
 /* Bottom grid */
 .bottom-grid {
   display: grid;
-  grid-template-columns: 1fr 1.6fr 1fr;
+  grid-template-columns: 1fr 1.2fr 1.6fr;
   gap: 12px;
 }
 
