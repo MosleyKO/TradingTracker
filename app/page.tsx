@@ -374,21 +374,21 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Bottom grid */}
-          <div className="bottom-grid">
+          {/* Row 1: Score + Equity Chart */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12, marginBottom: 12 }}>
             <RadarScore stats={stats} />
             <div className="panel">
               <div className="panel-title">Daily Net Cumulative P&amp;L</div>
               <EquityChart data={stats.equityCurve} />
             </div>
+          </div>
+
+          {/* Row 2: Calendar + Day of Week + Ticker */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1.8fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
             <div className="panel">
               <div className="panel-title">Monthly P&amp;L Calendar</div>
               <MonthlyCalendar data={calendarData} />
             </div>
-          </div>
-
-          {/* Day of week + Ticker breakdown */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
             {/* Day of week */}
             <div className="panel">
               <div className="panel-title">P&amp;L by Day of Week</div>
@@ -471,6 +471,7 @@ export default function Home() {
           </div>
 
           {/* Trade log */}
+
           <div className="panel" style={{marginTop:12}}>
             <div className="panel-title">Trade Log</div>
             <table className="trade-table">

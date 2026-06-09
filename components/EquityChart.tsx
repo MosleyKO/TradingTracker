@@ -20,7 +20,7 @@ export default function EquityChart({ data }: Props) {
     .map(([date, cumPnl]) => ({ date: date.slice(5), cumPnl }))
 
   return (
-    <ResponsiveContainer width="100%" height={150}>
+    <ResponsiveContainer width="100%" height={220}>
       <AreaChart data={deduped} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="pnlGrad" x1="0" y1="0" x2="0" y2="1">
