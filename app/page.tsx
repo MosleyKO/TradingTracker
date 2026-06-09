@@ -48,13 +48,20 @@ export default function Home() {
 
     if (error || !data) return
 
-    const tosTrades: Trade[] = data
-      .filter((r: any) => r.account_type === 'tos')
-      .map((r: any) => ({ symbol: r.symbol, pnl: r.pnl, closeTime: new Date(r.close_time) }))
+    const mapRow = (r: any): Trade => ({
+      symbol: r.symbol,
+      pnl: r.pnl,
+      closeTime: new Date(r.close_time),
+      openTime: r.open_time ? new Date(r.open_time) : undefined,
+      entryPrice: r.entry_price ?? undefined,
+      avgExitPrice: r.avg_exit_price ?? undefined,
+      totalQty: r.total_qty ?? undefined,
+      bestTrimPnl: r.best_trim_pnl ?? undefined,
+      trims: r.trims ? r.trims.map((tr: any) => ({ ...tr, time: new Date(tr.time) })) : undefined,
+    })
 
-    const webullTrades: Trade[] = data
-      .filter((r: any) => r.account_type === 'webull')
-      .map((r: any) => ({ symbol: r.symbol, pnl: r.pnl, closeTime: new Date(r.close_time) }))
+    const tosTrades: Trade[] = data.filter((r: any) => r.account_type === 'tos').map(mapRow)
+    const webullTrades: Trade[] = data.filter((r: any) => r.account_type === 'webull').map(mapRow)
 
     if (tosTrades.length) setTosStats(calcStats(tosTrades))
     if (webullTrades.length) setWebullStats(calcStats(webullTrades))
@@ -74,6 +81,12 @@ export default function Home() {
       symbol: t.symbol,
       pnl: t.pnl,
       close_time: t.closeTime.toISOString(),
+      open_time: t.openTime?.toISOString() ?? null,
+      entry_price: t.entryPrice ?? null,
+      avg_exit_price: t.avgExitPrice ?? null,
+      total_qty: t.totalQty ?? null,
+      best_trim_pnl: t.bestTrimPnl ?? null,
+      trims: t.trims ? t.trims.map(tr => ({ ...tr, time: tr.time.toISOString() })) : null,
     }))
 
     await supabase.from('trades').insert(rows)
