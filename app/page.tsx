@@ -211,6 +211,85 @@ export default function Home() {
     { key: 'custom', label: 'Custom' },
   ]
 
+  // Period comparison
+  const periodPnl = useMemo(() => {
+    if (preset === 'all' || preset === 'custom' || rawTrades.length === 0) return null
+    const now = new Date()
+    const cur = getPresetRange(preset)
+    const duration = cur.end.getTime() - cur.start.getTime()
+    const prevEnd = new Date(cur.start.getTime() - 1)
+    const prevStart = new Date(prevEnd.getTime() - duration)
+    const prevTrades = rawTrades.filter(t => t.closeTime >= prevStart && t.closeTime <= prevEnd)
+    const prevPnl = prevTrades.reduce((s, t) => s + t.pnl, 0)
+    if (prevPnl === 0) return null
+    return ((stats.netPnl - prevPnl) / Math.abs(prevPnl)) * 100
+  }, [filteredTrades, preset, rawTrades])
+
+  // Day of week stats
+  const dowStats = useMemo(() => {
+    const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
+    return days.map(day => {
+      const dayTrades = filteredTrades.filter(t => days[t.closeTime.getDay()] === day)
+      const pnl = dayTrades.reduce((s, t) => s + t.pnl, 0)
+      const wins = dayTrades.filter(t => t.pnl > 0).length
+      return { day, short: day.slice(0,3), pnl, trades: dayTrades.length, wins }
+    }).filter(d => d.trades > 0)
+  }, [filteredTrades])
+
+  const bestDay = dowStats.length ? dowStats.reduce((a, b) => a.pnl > b.pnl ? a : b) : null
+  const worstDay = dowStats.length ? dowStats.reduce((a, b) => a.pnl < b.pnl ? a : b) : null
+
+  // Ticker stats
+  const tickerStats = useMemo(() => {
+    const map = new Map<string, { pnl: number; trades: number; wins: number }>()
+    for (const t of filteredTrades) {
+      const sym = t.symbol.split(' ')[0]
+      const e = map.get(sym) || { pnl: 0, trades: 0, wins: 0 }
+      map.set(sym, { pnl: e.pnl + t.pnl, trades: e.trades + 1, wins: e.wins + (t.pnl > 0 ? 1 : 0) })
+    }
+    return Array.from(map.entries()).map(([sym, v]) => ({ sym, ...v })).sort((a, b) => b.pnl - a.pnl)
+  }, [filteredTrades])
+
+  // Insights
+  const insights = useMemo(() => {
+    const result = []
+    // Worst day to trade
+    if (worstDay && worstDay.pnl < 0) {
+      result.push({
+        icon: '⚠️',
+        title: 'Biggest Opportunity',
+        action: `Stop trading ${worstDay.day}s`,
+        stat: fmt(worstDay.pnl),
+        detail: `${worstDay.wins}W / ${worstDay.trades - worstDay.wins}L`,
+        positive: false,
+      })
+    }
+    // Strongest ticker
+    if (tickerStats.length > 0) {
+      const best = tickerStats[0]
+      result.push({
+        icon: '🏆',
+        title: 'Strongest Ticker',
+        action: best.sym,
+        stat: fmt(best.pnl),
+        detail: `${best.wins}W / ${best.trades} trades`,
+        positive: true,
+      })
+    }
+    // Most consistent day
+    if (bestDay) {
+      result.push({
+        icon: '📅',
+        title: 'Most Consistent Day',
+        action: bestDay.day,
+        stat: fmt(bestDay.pnl),
+        detail: `${bestDay.wins}W / ${bestDay.trades} trades`,
+        positive: true,
+      })
+    }
+    return result
+  }, [worstDay, bestDay, tickerStats])
+
   if (loadingData) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
@@ -221,6 +300,7 @@ export default function Home() {
 
   return (
     <div className="container">
+      {/* ── Header ── */}
       <div className="header">
         <h1>Trade Journal</h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -240,7 +320,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Upload */}
+      {/* ── Upload ── */}
       {!hasData ? (
         <div
           className={`upload-area ${dragOver ? 'drag-over' : ''}`}
@@ -248,7 +328,7 @@ export default function Home() {
           onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
           onDragLeave={() => setDragOver(false)}
           onDrop={onDrop}
-          style={{ padding: '24px 48px', marginBottom: 16 }}
+          style={{ padding: '24px 48px', marginBottom: 24 }}
         >
           <div className="upload-icon" style={{ fontSize: 28, marginBottom: 6 }}>📂</div>
           <h3 style={{ fontSize: 14 }}>
@@ -277,9 +357,9 @@ export default function Home() {
       )}
       <input ref={fileInputRef} type="file" accept=".csv" onChange={onFileInput} style={{ display: 'none' }} />
 
-      {/* Date range selector */}
+      {/* ── Date filter ── */}
       {hasData && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 24, flexWrap: 'wrap' }}>
           {PRESETS.map(p => (
             <button
               key={p.key}
@@ -295,25 +375,11 @@ export default function Home() {
           ))}
           {preset === 'custom' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 4 }}>
-              <input
-                type="date"
-                value={customStart}
-                onChange={e => setCustomStart(e.target.value)}
-                style={{
-                  background: 'var(--surface2)', border: '1px solid var(--border)',
-                  borderRadius: 6, color: 'var(--text)', padding: '4px 10px', fontSize: 12
-                }}
-              />
+              <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)}
+                style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '4px 10px', fontSize: 12 }} />
               <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>to</span>
-              <input
-                type="date"
-                value={customEnd}
-                onChange={e => setCustomEnd(e.target.value)}
-                style={{
-                  background: 'var(--surface2)', border: '1px solid var(--border)',
-                  borderRadius: 6, color: 'var(--text)', padding: '4px 10px', fontSize: 12
-                }}
-              />
+              <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)}
+                style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '4px 10px', fontSize: 12 }} />
             </div>
           )}
           {filteredTrades.length !== rawTrades.length && (
@@ -336,143 +402,185 @@ export default function Home() {
         </div>
       ) : (
         <>
-          {/* Stat cards */}
-          <div className="stat-grid">
-            <div className="stat-card">
-              <div className="stat-label">Net P&amp;L <span style={{color:'var(--text-muted)',fontSize:10}}>({stats.tradeCount} trades)</span></div>
-              <div className={`stat-value ${stats.netPnl >= 0 ? 'green' : 'red'}`}>{fmt(stats.netPnl)}</div>
+          {/* ════════════════════════════════════════════════
+              ROW 1 — Hero: Net P&L + Equity Curve
+          ════════════════════════════════════════════════ */}
+          <div className="panel" style={{ marginBottom: 24, display: 'flex', alignItems: 'stretch', gap: 0, padding: 0, overflow: 'hidden' }}>
+            {/* Left: P&L summary */}
+            <div style={{ width: 220, flexShrink: 0, padding: 24, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>
+                Net P&amp;L
+              </div>
+              <div style={{ fontSize: 36, fontWeight: 800, lineHeight: 1, color: stats.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                {fmt(stats.netPnl)}
+              </div>
+              {periodPnl !== null && (
+                <div style={{ fontSize: 12, color: periodPnl >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 500 }}>
+                  {periodPnl >= 0 ? '▲' : '▼'} {Math.abs(periodPnl).toFixed(1)}% vs prev period
+                </div>
+              )}
+              <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+                {stats.tradeCount} trades
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                <span style={{ color: 'var(--green)' }}>{Math.round(stats.winRate * stats.tradeCount)}W</span>
+                {' / '}
+                <span style={{ color: 'var(--red)' }}>{stats.tradeCount - Math.round(stats.winRate * stats.tradeCount)}L</span>
+              </div>
             </div>
+            {/* Right: Equity curve */}
+            <div style={{ flex: 1, padding: '16px 20px 12px 20px' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500, marginBottom: 8 }}>
+                Equity Curve
+              </div>
+              <EquityChart data={stats.equityCurve} />
+            </div>
+          </div>
+
+          {/* ════════════════════════════════════════════════
+              ROW 2 — KPI Cards (5 metrics)
+          ════════════════════════════════════════════════ */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16, marginBottom: 24 }}>
+            {/* Trade Win % */}
             <div className="stat-card">
               <div className="stat-label">Trade Win %</div>
               <div className={`stat-value ${stats.winRate >= 0.5 ? 'green' : 'red'}`}>{pct(stats.winRate)}</div>
               <div className="stat-sub">{Math.round(stats.winRate * stats.tradeCount)}W / {stats.tradeCount - Math.round(stats.winRate * stats.tradeCount)}L</div>
             </div>
+            {/* Profit Factor */}
             <div className="stat-card">
               <div className="stat-label">Profit Factor</div>
               <div className={`stat-value ${stats.profitFactor >= 1 ? 'green' : 'red'}`}>{stats.profitFactor.toFixed(2)}</div>
+              <div className="stat-sub">{stats.profitFactor >= 1.5 ? 'Strong' : stats.profitFactor >= 1 ? 'Positive' : 'Negative'}</div>
             </div>
+            {/* Avg Win / Loss */}
             <div className="stat-card">
-              <div className="stat-label">Day Win %</div>
-              <div className={`stat-value ${stats.dayWinRate >= 0.5 ? 'green' : 'red'}`}>{pct(stats.dayWinRate)}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Avg Win / Loss</div>
-              <div className="stat-value" style={{fontSize:16,paddingTop:4}}>
-                <span className="badge-win">{fmt(stats.avgWin)}</span>
-                <span style={{color:'var(--text-muted)',margin:'0 4px'}}>/</span>
-                <span className="badge-loss">-{fmt(stats.avgLoss)}</span>
+              <div className="stat-label">Avg Win / Avg Loss</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
+                <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--green)' }}>{fmt(stats.avgWin)}</span>
+                <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>/</span>
+                <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--red)' }}>-{fmt(stats.avgLoss)}</span>
               </div>
-              <div className="gauge-row">
+              <div className="gauge-row" style={{ marginTop: 2 }}>
                 <div className="gauge-bar">
                   <div className="gauge-fill" style={{ width: `${Math.min((stats.avgWin / (stats.avgWin + stats.avgLoss || 1)) * 100, 100)}%` }} />
                 </div>
               </div>
             </div>
+            {/* Max Drawdown */}
             <div className="stat-card">
               <div className="stat-label">Max Drawdown</div>
               <div className="stat-value red">-{fmt(stats.maxDrawdown)}</div>
             </div>
-          </div>
-
-          {/* Row 1: Score + Equity Chart */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12, marginBottom: 12 }}>
-            <RadarScore stats={stats} />
-            <div className="panel">
-              <div className="panel-title">Daily Net Cumulative P&amp;L</div>
-              <EquityChart data={stats.equityCurve} />
+            {/* Recovery Factor */}
+            <div className="stat-card">
+              <div className="stat-label">Recovery Factor</div>
+              <div className={`stat-value ${stats.recoveryFactor >= 1 ? 'green' : 'red'}`}>
+                {stats.recoveryFactor.toFixed(2)}
+              </div>
+              <div className="stat-sub">{stats.recoveryFactor >= 2 ? 'Excellent' : stats.recoveryFactor >= 1 ? 'Good' : 'Poor'}</div>
             </div>
           </div>
 
-          {/* Row 2: Calendar + Day of Week + Ticker */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1.8fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+          {/* ════════════════════════════════════════════════
+              ROW 3 — Calendar (60%) + Day & Ticker (40%)
+          ════════════════════════════════════════════════ */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gap: 24, marginBottom: 24 }}>
+            {/* Calendar */}
             <div className="panel">
               <div className="panel-title">Monthly P&amp;L Calendar</div>
               <MonthlyCalendar data={calendarData} />
             </div>
-            {/* Day of week */}
-            <div className="panel">
-              <div className="panel-title">P&amp;L by Day of Week</div>
-              {(() => {
-                const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
-                const dayData = days.map(day => {
-                  const dayTrades = filteredTrades.filter(t => days[t.closeTime.getDay()] === day)
-                  const pnl = dayTrades.reduce((s, t) => s + t.pnl, 0)
-                  const wins = dayTrades.filter(t => t.pnl > 0).length
-                  return { day: day.slice(0,3), pnl, trades: dayTrades.length, wins }
-                }).filter(d => d.trades > 0)
-                const max = Math.max(...dayData.map(d => Math.abs(d.pnl)), 1)
-                return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {dayData.map(d => (
-                      <div key={d.day} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <div style={{ width: 32, fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>{d.day}</div>
-                        <div style={{ flex: 1, height: 8, background: 'var(--surface2)', borderRadius: 4, overflow: 'hidden' }}>
-                          <div style={{
-                            height: '100%', borderRadius: 4,
-                            width: `${(Math.abs(d.pnl) / max) * 100}%`,
-                            background: d.pnl >= 0 ? 'var(--green)' : 'var(--red)',
-                          }} />
-                        </div>
-                        <div style={{ width: 80, fontSize: 12, textAlign: 'right', color: d.pnl >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
-                          {d.pnl >= 0 ? '+' : ''}{fmt(d.pnl)}
-                        </div>
-                        <div style={{ width: 48, fontSize: 11, color: 'var(--text-muted)', textAlign: 'right' }}>
-                          {d.wins}/{d.trades}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )
-              })()}
-            </div>
 
-            {/* Ticker breakdown */}
-            <div className="panel">
-              <div className="panel-title">P&amp;L by Ticker</div>
-              {(() => {
-                const tickerMap = new Map<string, { pnl: number; trades: number; wins: number }>()
-                for (const t of filteredTrades) {
-                  const sym = t.symbol.split(' ')[0]
-                  const existing = tickerMap.get(sym) || { pnl: 0, trades: 0, wins: 0 }
-                  tickerMap.set(sym, {
-                    pnl: existing.pnl + t.pnl,
-                    trades: existing.trades + 1,
-                    wins: existing.wins + (t.pnl > 0 ? 1 : 0),
-                  })
-                }
-                const tickers = Array.from(tickerMap.entries())
-                  .map(([sym, v]) => ({ sym, ...v }))
-                  .sort((a, b) => b.pnl - a.pnl)
-                const max = Math.max(...tickers.map(t => Math.abs(t.pnl)), 1)
-                return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {tickers.map(t => (
-                      <div key={t.sym} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <div style={{ width: 52, fontSize: 12, color: 'var(--text)', fontWeight: 600, flexShrink: 0 }}>{t.sym}</div>
-                        <div style={{ flex: 1, height: 8, background: 'var(--surface2)', borderRadius: 4, overflow: 'hidden' }}>
-                          <div style={{
-                            height: '100%', borderRadius: 4,
-                            width: `${(Math.abs(t.pnl) / max) * 100}%`,
-                            background: t.pnl >= 0 ? 'var(--green)' : 'var(--red)',
-                          }} />
+            {/* Right column: Day of Week + Ticker stacked */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {/* Day of Week */}
+              <div className="panel" style={{ flex: 1 }}>
+                <div className="panel-title">P&amp;L by Day of Week</div>
+                {(() => {
+                  const max = Math.max(...dowStats.map(d => Math.abs(d.pnl)), 1)
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {dowStats.map(d => (
+                        <div key={d.day} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div style={{ width: 30, fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>{d.short}</div>
+                          <div style={{ flex: 1, height: 8, background: 'var(--surface2)', borderRadius: 4, overflow: 'hidden' }}>
+                            <div style={{ height: '100%', borderRadius: 4, width: `${(Math.abs(d.pnl) / max) * 100}%`, background: d.pnl >= 0 ? 'var(--green)' : 'var(--red)' }} />
+                          </div>
+                          <div style={{ width: 76, fontSize: 12, textAlign: 'right', color: d.pnl >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                            {d.pnl >= 0 ? '+' : ''}{fmt(d.pnl)}
+                          </div>
+                          <div style={{ width: 36, fontSize: 11, color: 'var(--text-muted)', textAlign: 'right' }}>
+                            {d.wins}/{d.trades}
+                          </div>
                         </div>
-                        <div style={{ width: 80, fontSize: 12, textAlign: 'right', color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                      ))}
+                    </div>
+                  )
+                })()}
+              </div>
+
+              {/* Ticker breakdown */}
+              <div className="panel" style={{ flex: 1 }}>
+                <div className="panel-title">P&amp;L by Ticker</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {(() => {
+                    const max = Math.max(...tickerStats.map(t => Math.abs(t.pnl)), 1)
+                    return tickerStats.map(t => (
+                      <div key={t.sym} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div style={{ width: 48, fontSize: 12, color: 'var(--text)', fontWeight: 600, flexShrink: 0 }}>{t.sym}</div>
+                        <div style={{ flex: 1, height: 8, background: 'var(--surface2)', borderRadius: 4, overflow: 'hidden' }}>
+                          <div style={{ height: '100%', borderRadius: 4, width: `${(Math.abs(t.pnl) / max) * 100}%`, background: t.pnl >= 0 ? 'var(--green)' : 'var(--red)' }} />
+                        </div>
+                        <div style={{ width: 76, fontSize: 12, textAlign: 'right', color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
                           {t.pnl >= 0 ? '+' : ''}{fmt(t.pnl)}
                         </div>
-                        <div style={{ width: 48, fontSize: 11, color: 'var(--text-muted)', textAlign: 'right' }}>
+                        <div style={{ width: 36, fontSize: 11, color: 'var(--text-muted)', textAlign: 'right' }}>
                           {t.wins}/{t.trades}
                         </div>
                       </div>
-                    ))}
-                  </div>
-                )
-              })()}
+                    ))
+                  })()}
+                </div>
+              </div>
             </div>
           </div>
 
-          {/* Trade log */}
+          {/* ════════════════════════════════════════════════
+              ROW 4 — Insights
+          ════════════════════════════════════════════════ */}
+          {insights.length > 0 && (
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500, marginBottom: 12 }}>
+                Insights
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${insights.length}, 1fr)`, gap: 16 }}>
+                {insights.map((ins, i) => (
+                  <div key={i} className="panel" style={{ display: 'flex', alignItems: 'flex-start', gap: 14, padding: 20 }}>
+                    <div style={{ fontSize: 22, lineHeight: 1, paddingTop: 2 }}>{ins.icon}</div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 4 }}>{ins.title}</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 2 }}>{ins.action}</div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: ins.positive ? 'var(--green)' : 'var(--red)' }}>{ins.stat}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{ins.detail}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
-          <div className="panel" style={{marginTop:12}}>
+          {/* ════════════════════════════════════════════════
+              ROW 5 — Score (bottom, reduced priority)
+          ════════════════════════════════════════════════ */}
+          <div style={{ marginBottom: 24 }}>
+            <RadarScore stats={stats} />
+          </div>
+
+          {/* ════════════════════════════════════════════════
+              ROW 6 — Trade Log
+          ════════════════════════════════════════════════ */}
+          <div className="panel">
             <div className="panel-title">Trade Log</div>
             <table className="trade-table">
               <thead>
@@ -519,64 +627,64 @@ export default function Home() {
                     return sortDir === 'asc' ? cmp : -cmp
                   })
                   return sorted.map((t, i) => {
-                  const hasTrims = t.trims && t.trims.length > 1
-                  const isExpanded = expandedRows.has(i)
-                  const toggle = () => {
-                    if (!hasTrims) return
-                    setExpandedRows(prev => {
-                      const next = new Set(prev)
-                      next.has(i) ? next.delete(i) : next.add(i)
-                      return next
-                    })
-                  }
-                  const tradePct = t.entryPrice && t.avgExitPrice
-                    ? ((t.avgExitPrice - t.entryPrice) / t.entryPrice * 100)
-                    : null
-                  return (
-                    <React.Fragment key={i}>
-                      <tr onClick={toggle} style={{ cursor: hasTrims ? 'pointer' : 'default' }}>
-                        <td style={{textAlign:'center', color:'var(--text-muted)', fontSize:11, userSelect:'none'}}>
-                          {hasTrims ? (isExpanded ? '▾' : '▸') : ''}
-                        </td>
-                        <td style={{color:'var(--text-muted)'}}>{t.closeTime.toLocaleDateString()}</td>
-                        <td style={{fontWeight:600}}>
-                          {t.symbol}
-                          {hasTrims && <span style={{marginLeft:8, fontSize:10, color:'var(--text-muted)', fontWeight:400}}>{t.trims!.length} trims</span>}
-                        </td>
-                        <td style={{color:'var(--text-muted)'}}>{t.entryPrice ? `$${t.entryPrice.toFixed(2)}` : '—'}</td>
-                        <td style={{color:'var(--text-muted)'}}>{t.avgExitPrice ? `$${t.avgExitPrice.toFixed(2)}` : '—'}</td>
-                        <td style={{color:'var(--text-muted)'}}>{t.totalQty ?? '—'}</td>
-                        <td className={t.pnl >= 0 ? 'badge-win' : 'badge-loss'}>{fmt(t.pnl)}</td>
-                        <td className={tradePct !== null ? (tradePct >= 0 ? 'badge-win' : 'badge-loss') : ''}>
-                          {tradePct !== null ? `${tradePct >= 0 ? '+' : ''}${tradePct.toFixed(1)}%` : '—'}
-                        </td>
-                        <td className={t.pnl >= 0 ? 'badge-win' : 'badge-loss'}>{t.pnl >= 0 ? 'WIN' : 'LOSS'}</td>
-                      </tr>
-                      {hasTrims && isExpanded && t.trims!.map((tr, ti) => {
-                        const trimPct = t.entryPrice ? ((tr.price - t.entryPrice) / t.entryPrice * 100) : null
-                        return (
-                          <tr key={`${i}-trim-${ti}`} style={{background:'rgba(255,255,255,0.025)'}}>
-                            <td></td>
-                            <td style={{color:'var(--text-muted)', fontSize:11, paddingLeft:12}}>
-                              {tr.time.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}
-                            </td>
-                            <td style={{color:'var(--text-muted)', fontSize:11, paddingLeft:12}}>
-                              ↳ Trim {ti + 1}
-                              {tr.pnl === t.bestTrimPnl && <span style={{marginLeft:6, color:'#f0a500', fontSize:10}}>★ best</span>}
-                            </td>
-                            <td></td>
-                            <td style={{color:'var(--text-muted)', fontSize:11}}>${tr.price.toFixed(2)}</td>
-                            <td style={{color:'var(--text-muted)', fontSize:11}}>{tr.qty}</td>
-                            <td className={tr.pnl >= 0 ? 'badge-win' : 'badge-loss'} style={{fontSize:11}}>{fmt(tr.pnl)}</td>
-                            <td className={trimPct !== null ? (trimPct >= 0 ? 'badge-win' : 'badge-loss') : ''} style={{fontSize:11}}>
-                              {trimPct !== null ? `${trimPct >= 0 ? '+' : ''}${trimPct.toFixed(1)}%` : '—'}
-                            </td>
-                            <td></td>
-                          </tr>
-                        )
-                      })}
-                    </React.Fragment>
-                  )
+                    const hasTrims = t.trims && t.trims.length > 1
+                    const isExpanded = expandedRows.has(i)
+                    const toggle = () => {
+                      if (!hasTrims) return
+                      setExpandedRows(prev => {
+                        const next = new Set(prev)
+                        next.has(i) ? next.delete(i) : next.add(i)
+                        return next
+                      })
+                    }
+                    const tradePct = t.entryPrice && t.avgExitPrice
+                      ? ((t.avgExitPrice - t.entryPrice) / t.entryPrice * 100)
+                      : null
+                    return (
+                      <React.Fragment key={i}>
+                        <tr onClick={toggle} style={{ cursor: hasTrims ? 'pointer' : 'default' }}>
+                          <td style={{textAlign:'center', color:'var(--text-muted)', fontSize:11, userSelect:'none'}}>
+                            {hasTrims ? (isExpanded ? '▾' : '▸') : ''}
+                          </td>
+                          <td style={{color:'var(--text-muted)'}}>{t.closeTime.toLocaleDateString()}</td>
+                          <td style={{fontWeight:600}}>
+                            {t.symbol}
+                            {hasTrims && <span style={{marginLeft:8, fontSize:10, color:'var(--text-muted)', fontWeight:400}}>{t.trims!.length} trims</span>}
+                          </td>
+                          <td style={{color:'var(--text-muted)'}}>{t.entryPrice ? `$${t.entryPrice.toFixed(2)}` : '—'}</td>
+                          <td style={{color:'var(--text-muted)'}}>{t.avgExitPrice ? `$${t.avgExitPrice.toFixed(2)}` : '—'}</td>
+                          <td style={{color:'var(--text-muted)'}}>{t.totalQty ?? '—'}</td>
+                          <td className={t.pnl >= 0 ? 'badge-win' : 'badge-loss'}>{fmt(t.pnl)}</td>
+                          <td className={tradePct !== null ? (tradePct >= 0 ? 'badge-win' : 'badge-loss') : ''}>
+                            {tradePct !== null ? `${tradePct >= 0 ? '+' : ''}${tradePct.toFixed(1)}%` : '—'}
+                          </td>
+                          <td className={t.pnl >= 0 ? 'badge-win' : 'badge-loss'}>{t.pnl >= 0 ? 'WIN' : 'LOSS'}</td>
+                        </tr>
+                        {hasTrims && isExpanded && t.trims!.map((tr, ti) => {
+                          const trimPct = t.entryPrice ? ((tr.price - t.entryPrice) / t.entryPrice * 100) : null
+                          return (
+                            <tr key={`${i}-trim-${ti}`} style={{background:'rgba(255,255,255,0.025)'}}>
+                              <td></td>
+                              <td style={{color:'var(--text-muted)', fontSize:11, paddingLeft:12}}>
+                                {tr.time.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}
+                              </td>
+                              <td style={{color:'var(--text-muted)', fontSize:11, paddingLeft:12}}>
+                                ↳ Trim {ti + 1}
+                                {tr.pnl === t.bestTrimPnl && <span style={{marginLeft:6, color:'#f0a500', fontSize:10}}>★ best</span>}
+                              </td>
+                              <td></td>
+                              <td style={{color:'var(--text-muted)', fontSize:11}}>${tr.price.toFixed(2)}</td>
+                              <td style={{color:'var(--text-muted)', fontSize:11}}>{tr.qty}</td>
+                              <td className={tr.pnl >= 0 ? 'badge-win' : 'badge-loss'} style={{fontSize:11}}>{fmt(tr.pnl)}</td>
+                              <td className={trimPct !== null ? (trimPct >= 0 ? 'badge-win' : 'badge-loss') : ''} style={{fontSize:11}}>
+                                {trimPct !== null ? `${trimPct >= 0 ? '+' : ''}${trimPct.toFixed(1)}%` : '—'}
+                              </td>
+                              <td></td>
+                            </tr>
+                          )
+                        })}
+                      </React.Fragment>
+                    )
                   })
                 })()}
               </tbody>
