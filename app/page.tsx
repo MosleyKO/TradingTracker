@@ -1,31 +1,64 @@
 'use client'
 
-import React, { useState, useCallback, useRef, useEffect } from 'react'
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { parseTOS } from '@/lib/parseTOS'
 import { parseWebull } from '@/lib/parseWebull'
-import { calcStats, Stats, Trade } from '@/lib/stats'
+import { calcStats, Trade } from '@/lib/stats'
 import { createClient } from '@/lib/supabase'
 import EquityChart from '@/components/EquityChart'
 import RadarScore from '@/components/RadarScore'
 import CalendarHeatmap from '@/components/CalendarHeatmap'
 
 type Account = 'tos' | 'webull'
+type Preset = 'today' | 'week' | 'month' | '3month' | 'year' | 'all' | 'custom'
+
+function getPresetRange(preset: Preset): { start: Date; end: Date } {
+  const now = new Date()
+  const end = new Date(now); end.setHours(23, 59, 59, 999)
+  const start = new Date(now); start.setHours(0, 0, 0, 0)
+
+  if (preset === 'today') return { start, end }
+  if (preset === 'week') { start.setDate(start.getDate() - 6); return { start, end } }
+  if (preset === 'month') { start.setDate(1); return { start, end } }
+  if (preset === '3month') { start.setMonth(start.getMonth() - 2); start.setDate(1); return { start, end } }
+  if (preset === 'year') { start.setMonth(0); start.setDate(1); return { start, end } }
+  return { start: new Date(0), end }
+}
 
 export default function Home() {
   const [account, setAccount] = useState<Account>('tos')
-  const [tosStats, setTosStats] = useState<Stats | null>(null)
-  const [webullStats, setWebullStats] = useState<Stats | null>(null)
+  const [tosTrades, setTosTrades] = useState<Trade[]>([])
+  const [webullTrades, setWebullTrades] = useState<Trade[]>([])
   const [dragOver, setDragOver] = useState(false)
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
   const [userEmail, setUserEmail] = useState<string | null>(null)
   const [loadingData, setLoadingData] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [preset, setPreset] = useState<Preset>('all')
+  const [customStart, setCustomStart] = useState('')
+  const [customEnd, setCustomEnd] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const router = useRouter()
   const supabase = createClient()
 
-  const stats = account === 'tos' ? tosStats : webullStats
+  const rawTrades = account === 'tos' ? tosTrades : webullTrades
+
+  // Filtered trades based on date range
+  const filteredTrades = useMemo(() => {
+    if (rawTrades.length === 0) return []
+    let start: Date, end: Date
+    if (preset === 'custom') {
+      start = customStart ? new Date(customStart + 'T00:00:00') : new Date(0)
+      end = customEnd ? new Date(customEnd + 'T23:59:59') : new Date()
+    } else {
+      ({ start, end } = getPresetRange(preset))
+    }
+    return rawTrades.filter(t => t.closeTime >= start && t.closeTime <= end)
+  }, [rawTrades, preset, customStart, customEnd])
+
+  const stats = useMemo(() => calcStats(filteredTrades), [filteredTrades])
+  const hasData = rawTrades.length > 0
 
   // Check auth + load saved trades on mount
   useEffect(() => {
@@ -39,6 +72,18 @@ export default function Home() {
     init()
   }, [])
 
+  const mapRow = (r: any): Trade => ({
+    symbol: r.symbol,
+    pnl: r.pnl,
+    closeTime: new Date(r.close_time),
+    openTime: r.open_time ? new Date(r.open_time) : undefined,
+    entryPrice: r.entry_price ?? undefined,
+    avgExitPrice: r.avg_exit_price ?? undefined,
+    totalQty: r.total_qty ?? undefined,
+    bestTrimPnl: r.best_trim_pnl ?? undefined,
+    trims: r.trims ? r.trims.map((tr: any) => ({ ...tr, time: new Date(tr.time) })) : undefined,
+  })
+
   const loadTrades = async (userId: string) => {
     const { data, error } = await supabase
       .from('trades')
@@ -47,24 +92,8 @@ export default function Home() {
       .order('close_time', { ascending: true })
 
     if (error || !data) return
-
-    const mapRow = (r: any): Trade => ({
-      symbol: r.symbol,
-      pnl: r.pnl,
-      closeTime: new Date(r.close_time),
-      openTime: r.open_time ? new Date(r.open_time) : undefined,
-      entryPrice: r.entry_price ?? undefined,
-      avgExitPrice: r.avg_exit_price ?? undefined,
-      totalQty: r.total_qty ?? undefined,
-      bestTrimPnl: r.best_trim_pnl ?? undefined,
-      trims: r.trims ? r.trims.map((tr: any) => ({ ...tr, time: new Date(tr.time) })) : undefined,
-    })
-
-    const tosTrades: Trade[] = data.filter((r: any) => r.account_type === 'tos').map(mapRow)
-    const webullTrades: Trade[] = data.filter((r: any) => r.account_type === 'webull').map(mapRow)
-
-    if (tosTrades.length) setTosStats(calcStats(tosTrades))
-    if (webullTrades.length) setWebullStats(calcStats(webullTrades))
+    setTosTrades(data.filter((r: any) => r.account_type === 'tos').map(mapRow))
+    setWebullTrades(data.filter((r: any) => r.account_type === 'webull').map(mapRow))
   }
 
   const saveTrades = async (trades: Trade[], acct: Account) => {
@@ -72,7 +101,6 @@ export default function Home() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
 
-    // Delete existing trades for this account type then re-insert
     await supabase.from('trades').delete().eq('user_id', user.id).eq('account_type', acct)
 
     const rows = trades.map(t => ({
@@ -110,14 +138,9 @@ export default function Home() {
           avgExitPrice: t.avgClosePrice,
           bestTrimPnl: t.bestTrimPnl,
           totalQty: t.totalQty,
-          trims: t.trims.map(tr => ({
-            qty: tr.qty,
-            price: tr.closePrice,
-            pnl: tr.pnl,
-            time: tr.time,
-          })),
+          trims: t.trims.map(tr => ({ qty: tr.qty, price: tr.closePrice, pnl: tr.pnl, time: tr.time })),
         }))
-        setTosStats(calcStats(trades))
+        setTosTrades(trades)
       } else {
         const completed = parseWebull(text)
         trades = completed.map(t => ({
@@ -129,14 +152,9 @@ export default function Home() {
           avgExitPrice: t.avgExitPrice,
           bestTrimPnl: t.bestTrimPnl,
           totalQty: t.totalQty,
-          trims: t.trims.map(tr => ({
-            qty: tr.qty,
-            price: tr.sellPrice,
-            pnl: tr.pnl,
-            time: tr.time,
-          })),
+          trims: t.trims.map(tr => ({ qty: tr.qty, price: tr.sellPrice, pnl: tr.pnl, time: tr.time })),
         }))
-        setWebullStats(calcStats(trades))
+        setWebullTrades(trades)
       }
 
       await saveTrades(trades, acct)
@@ -168,6 +186,16 @@ export default function Home() {
 
   const pct = (n: number) => `${(n * 100).toFixed(2)}%`
 
+  const PRESETS: { key: Preset; label: string }[] = [
+    { key: 'today', label: 'Today' },
+    { key: 'week', label: 'This Week' },
+    { key: 'month', label: 'This Month' },
+    { key: '3month', label: '3 Months' },
+    { key: 'year', label: 'This Year' },
+    { key: 'all', label: 'All Time' },
+    { key: 'custom', label: 'Custom' },
+  ]
+
   if (loadingData) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
@@ -182,10 +210,10 @@ export default function Home() {
         <h1>Trade Journal</h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           <div className="tabs">
-            <button className={`tab ${account === 'tos' ? 'active' : ''}`} onClick={() => setAccount('tos')}>
+            <button className={`tab ${account === 'tos' ? 'active' : ''}`} onClick={() => { setAccount('tos'); setExpandedRows(new Set()) }}>
               ThinkorSwim
             </button>
-            <button className={`tab ${account === 'webull' ? 'active' : ''}`} onClick={() => setAccount('webull')}>
+            <button className={`tab ${account === 'webull' ? 'active' : ''}`} onClick={() => { setAccount('webull'); setExpandedRows(new Set()) }}>
               Webull
             </button>
           </div>
@@ -193,9 +221,7 @@ export default function Home() {
           <button onClick={handleSignOut} style={{
             background: 'none', border: '1px solid var(--border)', borderRadius: 6,
             color: 'var(--text-muted)', cursor: 'pointer', padding: '5px 12px', fontSize: 12
-          }}>
-            Sign out
-          </button>
+          }}>Sign out</button>
         </div>
       </div>
 
@@ -206,19 +232,72 @@ export default function Home() {
         onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
+        style={{ padding: '24px 48px', marginBottom: 16 }}
       >
-        <div className="upload-icon">📂</div>
-        <h3>
-          {saving ? 'Saving...' : `Drop your ${account === 'tos' ? 'ThinkorSwim Account Statement' : 'Webull Orders Records'} CSV`}
+        <div className="upload-icon" style={{ fontSize: 28, marginBottom: 6 }}>📂</div>
+        <h3 style={{ fontSize: 14 }}>
+          {saving ? 'Saving...' : `Upload ${account === 'tos' ? 'ThinkorSwim Account Statement' : 'Webull Orders Records'} CSV`}
         </h3>
-        <p>{saving ? 'Storing your trades...' : 'or click to browse — your data is saved automatically'}</p>
+        <p style={{ fontSize: 12 }}>{saving ? 'Storing your trades...' : 'Click or drag & drop — saved automatically'}</p>
         <input ref={fileInputRef} type="file" accept=".csv" onChange={onFileInput} style={{ display: 'none' }} />
       </div>
 
-      {!stats ? (
+      {/* Date range selector */}
+      {hasData && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+          {PRESETS.map(p => (
+            <button
+              key={p.key}
+              onClick={() => setPreset(p.key)}
+              style={{
+                padding: '5px 14px', borderRadius: 6, border: '1px solid var(--border)',
+                background: preset === p.key ? 'var(--blue)' : 'var(--surface)',
+                color: preset === p.key ? '#fff' : 'var(--text-muted)',
+                cursor: 'pointer', fontSize: 12, fontWeight: preset === p.key ? 600 : 400,
+                transition: 'all 0.15s',
+              }}
+            >{p.label}</button>
+          ))}
+          {preset === 'custom' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 4 }}>
+              <input
+                type="date"
+                value={customStart}
+                onChange={e => setCustomStart(e.target.value)}
+                style={{
+                  background: 'var(--surface2)', border: '1px solid var(--border)',
+                  borderRadius: 6, color: 'var(--text)', padding: '4px 10px', fontSize: 12
+                }}
+              />
+              <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>to</span>
+              <input
+                type="date"
+                value={customEnd}
+                onChange={e => setCustomEnd(e.target.value)}
+                style={{
+                  background: 'var(--surface2)', border: '1px solid var(--border)',
+                  borderRadius: 6, color: 'var(--text)', padding: '4px 10px', fontSize: 12
+                }}
+              />
+            </div>
+          )}
+          {filteredTrades.length !== rawTrades.length && (
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>
+              Showing {filteredTrades.length} of {rawTrades.length} trades
+            </span>
+          )}
+        </div>
+      )}
+
+      {!hasData ? (
         <div className="empty-state">
           <h2>No data yet</h2>
           <p>Upload a CSV above to see your trading stats</p>
+        </div>
+      ) : filteredTrades.length === 0 ? (
+        <div className="empty-state">
+          <h2>No trades in this period</h2>
+          <p>Try a different date range</p>
         </div>
       ) : (
         <>
@@ -228,23 +307,19 @@ export default function Home() {
               <div className="stat-label">Net P&amp;L <span style={{color:'var(--text-muted)',fontSize:10}}>({stats.tradeCount} trades)</span></div>
               <div className={`stat-value ${stats.netPnl >= 0 ? 'green' : 'red'}`}>{fmt(stats.netPnl)}</div>
             </div>
-
             <div className="stat-card">
               <div className="stat-label">Trade Win %</div>
               <div className={`stat-value ${stats.winRate >= 0.5 ? 'green' : 'red'}`}>{pct(stats.winRate)}</div>
               <div className="stat-sub">{Math.round(stats.winRate * stats.tradeCount)}W / {stats.tradeCount - Math.round(stats.winRate * stats.tradeCount)}L</div>
             </div>
-
             <div className="stat-card">
               <div className="stat-label">Profit Factor</div>
               <div className={`stat-value ${stats.profitFactor >= 1 ? 'green' : 'red'}`}>{stats.profitFactor.toFixed(2)}</div>
             </div>
-
             <div className="stat-card">
               <div className="stat-label">Day Win %</div>
               <div className={`stat-value ${stats.dayWinRate >= 0.5 ? 'green' : 'red'}`}>{pct(stats.dayWinRate)}</div>
             </div>
-
             <div className="stat-card">
               <div className="stat-label">Avg Win / Loss</div>
               <div className="stat-value" style={{fontSize:16,paddingTop:4}}>
@@ -254,13 +329,10 @@ export default function Home() {
               </div>
               <div className="gauge-row">
                 <div className="gauge-bar">
-                  <div className="gauge-fill" style={{
-                    width: `${Math.min((stats.avgWin / (stats.avgWin + stats.avgLoss || 1)) * 100, 100)}%`
-                  }} />
+                  <div className="gauge-fill" style={{ width: `${Math.min((stats.avgWin / (stats.avgWin + stats.avgLoss || 1)) * 100, 100)}%` }} />
                 </div>
               </div>
             </div>
-
             <div className="stat-card">
               <div className="stat-label">Max Drawdown</div>
               <div className="stat-value red">-{fmt(stats.maxDrawdown)}</div>
@@ -309,27 +381,19 @@ export default function Home() {
                       return next
                     })
                   }
-                  // Overall % = (avgExit - entry) / entry * 100
                   const tradePct = t.entryPrice && t.avgExitPrice
                     ? ((t.avgExitPrice - t.entryPrice) / t.entryPrice * 100)
                     : null
                   return (
                     <React.Fragment key={i}>
-                      <tr
-                        onClick={toggle}
-                        style={{ cursor: hasTrims ? 'pointer' : 'default' }}
-                      >
+                      <tr onClick={toggle} style={{ cursor: hasTrims ? 'pointer' : 'default' }}>
                         <td style={{textAlign:'center', color:'var(--text-muted)', fontSize:11, userSelect:'none'}}>
                           {hasTrims ? (isExpanded ? '▾' : '▸') : ''}
                         </td>
                         <td style={{color:'var(--text-muted)'}}>{t.closeTime.toLocaleDateString()}</td>
                         <td style={{fontWeight:600}}>
                           {t.symbol}
-                          {hasTrims && (
-                            <span style={{marginLeft:8, fontSize:10, color:'var(--text-muted)', fontWeight:400}}>
-                              {t.trims!.length} trims
-                            </span>
-                          )}
+                          {hasTrims && <span style={{marginLeft:8, fontSize:10, color:'var(--text-muted)', fontWeight:400}}>{t.trims!.length} trims</span>}
                         </td>
                         <td style={{color:'var(--text-muted)'}}>{t.entryPrice ? `$${t.entryPrice.toFixed(2)}` : '—'}</td>
                         <td style={{color:'var(--text-muted)'}}>{t.avgExitPrice ? `$${t.avgExitPrice.toFixed(2)}` : '—'}</td>
@@ -341,9 +405,7 @@ export default function Home() {
                         <td className={t.pnl >= 0 ? 'badge-win' : 'badge-loss'}>{t.pnl >= 0 ? 'WIN' : 'LOSS'}</td>
                       </tr>
                       {hasTrims && isExpanded && t.trims!.map((tr, ti) => {
-                        const trimPct = t.entryPrice
-                          ? ((tr.price - t.entryPrice) / t.entryPrice * 100)
-                          : null
+                        const trimPct = t.entryPrice ? ((tr.price - t.entryPrice) / t.entryPrice * 100) : null
                         return (
                           <tr key={`${i}-trim-${ti}`} style={{background:'rgba(255,255,255,0.025)'}}>
                             <td></td>
@@ -352,9 +414,7 @@ export default function Home() {
                             </td>
                             <td style={{color:'var(--text-muted)', fontSize:11, paddingLeft:12}}>
                               ↳ Trim {ti + 1}
-                              {tr.pnl === t.bestTrimPnl && (
-                                <span style={{marginLeft:6, color:'#f0a500', fontSize:10}}>★ best</span>
-                              )}
+                              {tr.pnl === t.bestTrimPnl && <span style={{marginLeft:6, color:'#f0a500', fontSize:10}}>★ best</span>}
                             </td>
                             <td></td>
                             <td style={{color:'var(--text-muted)', fontSize:11}}>${tr.price.toFixed(2)}</td>
