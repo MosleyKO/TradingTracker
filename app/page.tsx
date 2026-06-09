@@ -38,6 +38,10 @@ export default function Home() {
   const [preset, setPreset] = useState<Preset>('all')
   const [customStart, setCustomStart] = useState('')
   const [customEnd, setCustomEnd] = useState('')
+  type SortKey = 'date' | 'symbol' | 'pnl' | 'pct' | 'qty'
+  type SortDir = 'asc' | 'desc'
+  const [sortKey, setSortKey] = useState<SortKey>('date')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const router = useRouter()
   const supabase = createClient()
@@ -372,6 +376,89 @@ export default function Home() {
             </div>
           </div>
 
+          {/* Day of week + Ticker breakdown */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
+            {/* Day of week */}
+            <div className="panel">
+              <div className="panel-title">P&amp;L by Day of Week</div>
+              {(() => {
+                const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
+                const dayData = days.map(day => {
+                  const dayTrades = filteredTrades.filter(t => days[t.closeTime.getDay()] === day)
+                  const pnl = dayTrades.reduce((s, t) => s + t.pnl, 0)
+                  const wins = dayTrades.filter(t => t.pnl > 0).length
+                  return { day: day.slice(0,3), pnl, trades: dayTrades.length, wins }
+                }).filter(d => d.trades > 0)
+                const max = Math.max(...dayData.map(d => Math.abs(d.pnl)), 1)
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {dayData.map(d => (
+                      <div key={d.day} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div style={{ width: 32, fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>{d.day}</div>
+                        <div style={{ flex: 1, height: 8, background: 'var(--surface2)', borderRadius: 4, overflow: 'hidden' }}>
+                          <div style={{
+                            height: '100%', borderRadius: 4,
+                            width: `${(Math.abs(d.pnl) / max) * 100}%`,
+                            background: d.pnl >= 0 ? 'var(--green)' : 'var(--red)',
+                          }} />
+                        </div>
+                        <div style={{ width: 80, fontSize: 12, textAlign: 'right', color: d.pnl >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                          {d.pnl >= 0 ? '+' : ''}{fmt(d.pnl)}
+                        </div>
+                        <div style={{ width: 48, fontSize: 11, color: 'var(--text-muted)', textAlign: 'right' }}>
+                          {d.wins}/{d.trades}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              })()}
+            </div>
+
+            {/* Ticker breakdown */}
+            <div className="panel">
+              <div className="panel-title">P&amp;L by Ticker</div>
+              {(() => {
+                const tickerMap = new Map<string, { pnl: number; trades: number; wins: number }>()
+                for (const t of filteredTrades) {
+                  const sym = t.symbol.split(' ')[0]
+                  const existing = tickerMap.get(sym) || { pnl: 0, trades: 0, wins: 0 }
+                  tickerMap.set(sym, {
+                    pnl: existing.pnl + t.pnl,
+                    trades: existing.trades + 1,
+                    wins: existing.wins + (t.pnl > 0 ? 1 : 0),
+                  })
+                }
+                const tickers = Array.from(tickerMap.entries())
+                  .map(([sym, v]) => ({ sym, ...v }))
+                  .sort((a, b) => b.pnl - a.pnl)
+                const max = Math.max(...tickers.map(t => Math.abs(t.pnl)), 1)
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 260, overflowY: 'auto' }}>
+                    {tickers.map(t => (
+                      <div key={t.sym} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div style={{ width: 52, fontSize: 12, color: 'var(--text)', fontWeight: 600, flexShrink: 0 }}>{t.sym}</div>
+                        <div style={{ flex: 1, height: 8, background: 'var(--surface2)', borderRadius: 4, overflow: 'hidden' }}>
+                          <div style={{
+                            height: '100%', borderRadius: 4,
+                            width: `${(Math.abs(t.pnl) / max) * 100}%`,
+                            background: t.pnl >= 0 ? 'var(--green)' : 'var(--red)',
+                          }} />
+                        </div>
+                        <div style={{ width: 80, fontSize: 12, textAlign: 'right', color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                          {t.pnl >= 0 ? '+' : ''}{fmt(t.pnl)}
+                        </div>
+                        <div style={{ width: 48, fontSize: 11, color: 'var(--text-muted)', textAlign: 'right' }}>
+                          {t.wins}/{t.trades}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              })()}
+            </div>
+          </div>
+
           {/* Trade log */}
           <div className="panel" style={{marginTop:12}}>
             <div className="panel-title">Trade Log</div>
@@ -379,18 +466,47 @@ export default function Home() {
               <thead>
                 <tr>
                   <th style={{width:32}}></th>
-                  <th>Date</th>
-                  <th>Symbol</th>
-                  <th>Entry</th>
-                  <th>Avg Exit</th>
-                  <th>Qty</th>
-                  <th>Total P&amp;L</th>
-                  <th>Return %</th>
-                  <th>Result</th>
+                  {([
+                    { key: 'date', label: 'Date' },
+                    { key: 'symbol', label: 'Symbol' },
+                    { key: null, label: 'Entry' },
+                    { key: null, label: 'Avg Exit' },
+                    { key: 'qty', label: 'Qty' },
+                    { key: 'pnl', label: 'Total P&L' },
+                    { key: 'pct', label: 'Return %' },
+                    { key: null, label: 'Result' },
+                  ] as { key: SortKey | null; label: string }[]).map(col => (
+                    <th
+                      key={col.label}
+                      onClick={() => {
+                        if (!col.key) return
+                        if (sortKey === col.key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+                        else { setSortKey(col.key); setSortDir('desc') }
+                        setExpandedRows(new Set())
+                      }}
+                      style={{ cursor: col.key ? 'pointer' : 'default', userSelect: 'none', whiteSpace: 'nowrap' }}
+                    >
+                      {col.label}
+                      {col.key && sortKey === col.key && <span style={{ marginLeft: 4, fontSize: 10 }}>{sortDir === 'asc' ? '▲' : '▼'}</span>}
+                      {col.key && sortKey !== col.key && <span style={{ marginLeft: 4, fontSize: 10, opacity: 0.3 }}>⇅</span>}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {[...stats.trades].reverse().map((t, i) => {
+                {(() => {
+                  const sorted = [...stats.trades].sort((a, b) => {
+                    const pctA = a.entryPrice && a.avgExitPrice ? (a.avgExitPrice - a.entryPrice) / a.entryPrice : 0
+                    const pctB = b.entryPrice && b.avgExitPrice ? (b.avgExitPrice - b.entryPrice) / b.entryPrice : 0
+                    let cmp = 0
+                    if (sortKey === 'date') cmp = a.closeTime.getTime() - b.closeTime.getTime()
+                    else if (sortKey === 'symbol') cmp = a.symbol.localeCompare(b.symbol)
+                    else if (sortKey === 'pnl') cmp = a.pnl - b.pnl
+                    else if (sortKey === 'pct') cmp = pctA - pctB
+                    else if (sortKey === 'qty') cmp = (a.totalQty ?? 0) - (b.totalQty ?? 0)
+                    return sortDir === 'asc' ? cmp : -cmp
+                  })
+                  return sorted.map((t, i) => {
                   const hasTrims = t.trims && t.trims.length > 1
                   const isExpanded = expandedRows.has(i)
                   const toggle = () => {
@@ -449,7 +565,8 @@ export default function Home() {
                       })}
                     </React.Fragment>
                   )
-                })}
+                  })
+                })()}
               </tbody>
             </table>
           </div>
