@@ -618,14 +618,19 @@ export default function Home() {
           </div>
 
           {/* ════════════════════════════════════════════════
-              ROW 4 — Insights
+              ROW 4 — Score + Insights (same row)
           ════════════════════════════════════════════════ */}
-          {insights.length > 0 && (
-            <div style={{ marginBottom: 24 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500, marginBottom: 12 }}>
+          <div style={{ display: 'flex', gap: 24, marginBottom: 24, alignItems: 'stretch' }}>
+            {/* Score — fixed width */}
+            <div style={{ width: 280, flexShrink: 0 }}>
+              <RadarScore stats={stats} />
+            </div>
+            {/* Insights — fill remaining space */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>
                 Insights
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${insights.length}, 1fr)`, gap: 16 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.max(insights.length, 1)}, 1fr)`, gap: 16, flex: 1 }}>
                 {insights.map((ins, i) => (
                   <div key={i} className="panel" style={{ display: 'flex', alignItems: 'flex-start', gap: 14, padding: 20 }}>
                     <div style={{ width: 32, height: 32, borderRadius: 8, background: ins.positive ? 'rgba(38,201,122,0.12)' : 'rgba(224,92,92,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -655,17 +660,10 @@ export default function Home() {
                 ))}
               </div>
             </div>
-          )}
-
-          {/* ════════════════════════════════════════════════
-              ROW 5 — Score (bottom, reduced priority)
-          ════════════════════════════════════════════════ */}
-          <div style={{ marginBottom: 24 }}>
-            <RadarScore stats={stats} />
           </div>
 
           {/* ════════════════════════════════════════════════
-              ROW 6 — Trade Log
+              ROW 5 — Trade Log
           ════════════════════════════════════════════════ */}
           <div className="panel">
             <div className="panel-title">Trade Log</div>
