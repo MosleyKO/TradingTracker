@@ -226,21 +226,41 @@ export default function Home() {
       </div>
 
       {/* Upload */}
-      <div
-        className={`upload-area ${dragOver ? 'drag-over' : ''}`}
-        onClick={() => fileInputRef.current?.click()}
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={onDrop}
-        style={{ padding: '24px 48px', marginBottom: 16 }}
-      >
-        <div className="upload-icon" style={{ fontSize: 28, marginBottom: 6 }}>📂</div>
-        <h3 style={{ fontSize: 14 }}>
-          {saving ? 'Saving...' : `Upload ${account === 'tos' ? 'ThinkorSwim Account Statement' : 'Webull Orders Records'} CSV`}
-        </h3>
-        <p style={{ fontSize: 12 }}>{saving ? 'Storing your trades...' : 'Click or drag & drop — saved automatically'}</p>
-        <input ref={fileInputRef} type="file" accept=".csv" onChange={onFileInput} style={{ display: 'none' }} />
-      </div>
+      {!hasData ? (
+        <div
+          className={`upload-area ${dragOver ? 'drag-over' : ''}`}
+          onClick={() => fileInputRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={onDrop}
+          style={{ padding: '24px 48px', marginBottom: 16 }}
+        >
+          <div className="upload-icon" style={{ fontSize: 28, marginBottom: 6 }}>📂</div>
+          <h3 style={{ fontSize: 14 }}>
+            {saving ? 'Saving...' : `Upload ${account === 'tos' ? 'ThinkorSwim Account Statement' : 'Webull Orders Records'} CSV`}
+          </h3>
+          <p style={{ fontSize: 12 }}>{saving ? 'Storing your trades...' : 'Click or drag & drop — saved automatically'}</p>
+        </div>
+      ) : (
+        <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '8px 16px', background: 'var(--surface)', border: '1px solid var(--border)',
+              borderRadius: 8, color: 'var(--text)', cursor: 'pointer', fontSize: 13, fontWeight: 500,
+              transition: 'border-color 0.15s',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--blue)')}
+            onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border)')}
+          >
+            <span style={{ fontSize: 16 }}>+</span>
+            {saving ? 'Saving...' : 'Update Trades'}
+          </button>
+          {saving && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Storing your trades...</span>}
+        </div>
+      )}
+      <input ref={fileInputRef} type="file" accept=".csv" onChange={onFileInput} style={{ display: 'none' }} />
 
       {/* Date range selector */}
       {hasData && (
