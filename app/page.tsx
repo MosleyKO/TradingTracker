@@ -198,6 +198,8 @@ export default function Home() {
       }
 
       await saveTrades(trades, acct)
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) await loadTrades(user.id)
     }
     reader.readAsText(file)
   }, [account])
