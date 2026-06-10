@@ -137,8 +137,6 @@ export default function Home() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
 
-    await supabase.from('trades').delete().eq('user_id', user.id).eq('account_type', acct)
-
     const rows = trades.map(t => ({
       user_id: user.id,
       account_type: acct,
@@ -153,7 +151,7 @@ export default function Home() {
       trims: t.trims ? t.trims.map(tr => ({ ...tr, time: tr.time.toISOString() })) : null,
     }))
 
-    await supabase.from('trades').insert(rows)
+    await supabase.from('trades').upsert(rows, { onConflict: 'user_id,account_type,symbol,close_time' })
     setSaving(false)
   }
 
@@ -162,6 +160,12 @@ export default function Home() {
     reader.onload = async (e) => {
       const text = e.target?.result as string
       let trades: Trade[]
+
+      const merge = (existing: Trade[], incoming: Trade[]): Trade[] => {
+        const key = (t: Trade) => `${t.symbol}|${t.closeTime.toISOString()}`
+        const seen = new Set(existing.map(key))
+        return [...existing, ...incoming.filter(t => !seen.has(key(t)))]
+      }
 
       if (acct === 'tos') {
         const completed = parseTOS(text)
@@ -176,7 +180,7 @@ export default function Home() {
           totalQty: t.totalQty,
           trims: t.trims.map(tr => ({ qty: tr.qty, price: tr.closePrice, pnl: tr.pnl, time: tr.time })),
         }))
-        setTosTrades(trades)
+        setTosTrades(prev => merge(prev, trades))
       } else {
         const completed = parseWebull(text)
         trades = completed.map(t => ({
@@ -190,7 +194,7 @@ export default function Home() {
           totalQty: t.totalQty,
           trims: t.trims.map(tr => ({ qty: tr.qty, price: tr.sellPrice, pnl: tr.pnl, time: tr.time })),
         }))
-        setWebullTrades(trades)
+        setWebullTrades(prev => merge(prev, trades))
       }
 
       await saveTrades(trades, acct)
