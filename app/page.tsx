@@ -135,7 +135,7 @@ export default function Home() {
   const saveTrades = async (trades: Trade[], acct: Account) => {
     setSaving(true)
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
+    if (!user) { setSaving(false); return }
 
     const rows = trades.map(t => ({
       user_id: user.id,
@@ -151,7 +151,8 @@ export default function Home() {
       trims: t.trims ? t.trims.map(tr => ({ ...tr, time: tr.time.toISOString() })) : null,
     }))
 
-    await supabase.from('trades').upsert(rows, { onConflict: 'user_id,account_type,symbol,close_time' })
+    await supabase.from('trades').delete().eq('user_id', user.id).eq('account_type', acct)
+    await supabase.from('trades').insert(rows)
     setSaving(false)
   }
 
@@ -180,7 +181,11 @@ export default function Home() {
           totalQty: t.totalQty,
           trims: t.trims.map(tr => ({ qty: tr.qty, price: tr.closePrice, pnl: tr.pnl, time: tr.time })),
         }))
-        setTosTrades(prev => merge(prev, trades))
+        setTosTrades(prev => {
+          const merged = merge(prev, trades)
+          saveTrades(merged, acct)
+          return merged
+        })
       } else {
         const completed = parseWebull(text)
         trades = completed.map(t => ({
@@ -194,12 +199,12 @@ export default function Home() {
           totalQty: t.totalQty,
           trims: t.trims.map(tr => ({ qty: tr.qty, price: tr.sellPrice, pnl: tr.pnl, time: tr.time })),
         }))
-        setWebullTrades(prev => merge(prev, trades))
+        setWebullTrades(prev => {
+          const merged = merge(prev, trades)
+          saveTrades(merged, acct)
+          return merged
+        })
       }
-
-      await saveTrades(trades, acct)
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) await loadTrades(user.id)
     }
     reader.readAsText(file)
   }, [account])
