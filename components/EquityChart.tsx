@@ -15,9 +15,11 @@ export default function EquityChart({ data }: Props) {
   // Deduplicate dates — keep last value per date
   const byDate = new Map<string, number>()
   for (const d of data) byDate.set(d.date, d.cumPnl)
-  const deduped = Array.from(byDate.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, cumPnl]) => ({ date: date.slice(5), cumPnl }))
+  const sorted = Array.from(byDate.entries()).sort(([a], [b]) => a.localeCompare(b))
+  const deduped = [
+    { date: '', cumPnl: 0 },
+    ...sorted.map(([date, cumPnl]) => ({ date: date.slice(5), cumPnl })),
+  ]
 
   return (
     <ResponsiveContainer width="100%" height={220}>
@@ -29,7 +31,7 @@ export default function EquityChart({ data }: Props) {
           </linearGradient>
         </defs>
         <XAxis dataKey="date" tick={{ fill: '#7b80a0', fontSize: 10 }} axisLine={false} tickLine={false} />
-        <YAxis tick={{ fill: '#7b80a0', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={v => `$${v}`} width={55} />
+        <YAxis tick={{ fill: '#7b80a0', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={v => `$${v}`} width={55} domain={['auto', 'auto']} />
         <Tooltip
           contentStyle={{ background: '#1a1d27', border: '1px solid #2a2e42', borderRadius: 6, fontSize: 12 }}
           labelStyle={{ color: '#7b80a0' }}
