@@ -162,12 +162,6 @@ export default function Home() {
       const text = e.target?.result as string
       let trades: Trade[]
 
-      const merge = (existing: Trade[], incoming: Trade[]): Trade[] => {
-        const key = (t: Trade) => `${t.symbol}|${t.closeTime.toISOString()}`
-        const seen = new Set(existing.map(key))
-        return [...existing, ...incoming.filter(t => !seen.has(key(t)))]
-      }
-
       if (acct === 'tos') {
         const completed = parseTOS(text)
         trades = completed.map(t => ({
@@ -181,9 +175,6 @@ export default function Home() {
           totalQty: t.totalQty,
           trims: t.trims.map(tr => ({ qty: tr.qty, price: tr.closePrice, pnl: tr.pnl, time: tr.time })),
         }))
-        const merged = merge(tosTrades, trades)
-        setTosTrades(merged)
-        await saveTrades(merged, acct)
       } else {
         const completed = parseWebull(text)
         trades = completed.map(t => ({
@@ -197,10 +188,25 @@ export default function Home() {
           totalQty: t.totalQty,
           trims: t.trims.map(tr => ({ qty: tr.qty, price: tr.sellPrice, pnl: tr.pnl, time: tr.time })),
         }))
-        const merged = merge(webullTrades, trades)
-        setWebullTrades(merged)
-        await saveTrades(merged, acct)
       }
+
+      // Merge against what's actually in the DB (avoids stale local state)
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+      const { data: existingRows } = await supabase
+        .from('trades')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('account_type', acct)
+      const existing = (existingRows ?? []).map(mapRow)
+
+      const key = (t: Trade) => `${t.symbol}|${t.closeTime.toISOString()}`
+      const seen = new Set(existing.map(key))
+      const merged = [...existing, ...trades.filter(t => !seen.has(key(t)))]
+
+      if (acct === 'tos') setTosTrades(merged)
+      else setWebullTrades(merged)
+      await saveTrades(merged, acct)
     }
     reader.readAsText(file)
   }, [account])
