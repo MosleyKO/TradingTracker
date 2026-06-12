@@ -151,8 +151,10 @@ export default function Home() {
       trims: t.trims ? t.trims.map(tr => ({ ...tr, time: tr.time.toISOString() })) : null,
     }))
 
-    await supabase.from('trades').delete().eq('user_id', user.id).eq('account_type', acct)
-    await supabase.from('trades').insert(rows)
+    const { error: delError } = await supabase.from('trades').delete().eq('user_id', user.id).eq('account_type', acct)
+    if (delError) { alert(`Save failed (delete): ${delError.message}`); setSaving(false); return }
+    const { error: insError } = await supabase.from('trades').insert(rows)
+    if (insError) alert(`Save failed (insert): ${insError.message}`)
     setSaving(false)
   }
 
@@ -200,7 +202,7 @@ export default function Home() {
         .eq('account_type', acct)
       const existing = (existingRows ?? []).map(mapRow)
 
-      const key = (t: Trade) => `${t.symbol}|${t.closeTime.toISOString()}`
+      const key = (t: Trade) => `${t.symbol}|${t.closeTime.toISOString()}|${t.pnl.toFixed(2)}|${t.totalQty ?? ''}`
       const seen = new Set(existing.map(key))
       const merged = [...existing, ...trades.filter(t => !seen.has(key(t)))]
 
