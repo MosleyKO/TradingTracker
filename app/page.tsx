@@ -60,9 +60,22 @@ export default function Home() {
   const router = useRouter()
   const supabase = createClient()
 
+  const ALL_ID = '__all__'
+  const isAllView = activeId === ALL_ID
   const activeAccount = accounts.find(a => a.id === activeId) ?? null
-  const rawTrades = tradesByAccount[activeId] ?? []
-  const startingBalance = activeAccount?.starting_balance ?? null
+  const rawTrades = useMemo(() => {
+    if (!isAllView) return tradesByAccount[activeId] ?? []
+    const nameById = new Map(accounts.map(a => [a.id, a.name]))
+    return Object.entries(tradesByAccount)
+      .flatMap(([acctId, trades]) => trades.map(t => ({ ...t, account: nameById.get(acctId) ?? acctId })))
+      .sort((a, b) => a.closeTime.getTime() - b.closeTime.getTime())
+  }, [tradesByAccount, activeId, isAllView, accounts])
+  const startingBalance = isAllView
+    ? (() => {
+        const set = accounts.filter(a => a.starting_balance != null)
+        return set.length ? set.reduce((s, a) => s + (a.starting_balance ?? 0), 0) : null
+      })()
+    : activeAccount?.starting_balance ?? null
 
   // Filtered trades based on date range
   const filteredTrades = useMemo(() => {
@@ -394,6 +407,15 @@ export default function Home() {
         <h1>Trade Journal</h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           <div className="tabs">
+            {accounts.length > 1 && (
+              <button
+                className={`tab ${isAllView ? 'active' : ''}`}
+                onClick={() => { setActiveId(ALL_ID); setExpandedRows(new Set()) }}
+                title="Combined view across all accounts"
+              >
+                All Accounts
+              </button>
+            )}
             {accounts.map(a => (
               renamingId === a.id ? (
                 <input
@@ -455,8 +477,8 @@ export default function Home() {
         </div>
       </div>
 
-      {/* ── Upload ── */}
-      {!hasData ? (
+      {/* ── Upload (per-account only) ── */}
+      {isAllView ? null : !hasData ? (
         <div
           className={`upload-area ${dragOver ? 'drag-over' : ''}`}
           onClick={() => fileInputRef.current?.click()}
@@ -560,14 +582,16 @@ export default function Home() {
                       </span>
                     )
                   })()}
-                  <button
-                    onClick={() => { setBalanceInput(String(startingBalance)); setEditingBalance(true) }}
-                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1 }}
-                    title="Edit starting balance"
-                  >✎</button>
+                  {!isAllView && (
+                    <button
+                      onClick={() => { setBalanceInput(String(startingBalance)); setEditingBalance(true) }}
+                      style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1 }}
+                      title="Edit starting balance"
+                    >✎</button>
+                  )}
                 </div>
               ) : (
-                !editingBalance ? (
+                !editingBalance && !isAllView ? (
                   <button
                     onClick={() => { setBalanceInput(''); setEditingBalance(true) }}
                     style={{ background: 'none', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontSize: 12, padding: 0, textAlign: 'left', marginTop: 2 }}
@@ -842,6 +866,11 @@ export default function Home() {
                           <td style={{color:'var(--text-muted)'}}>{t.closeTime.toLocaleDateString()}</td>
                           <td style={{fontWeight:600}}>
                             {t.symbol}
+                            {isAllView && t.account && (
+                              <span style={{marginLeft:8, fontSize:10, color:'var(--blue)', fontWeight:500, background:'rgba(91,140,245,0.12)', padding:'2px 6px', borderRadius:4}}>
+                                {t.account}
+                              </span>
+                            )}
                             {hasTrims && <span style={{marginLeft:8, fontSize:10, color:'var(--text-muted)', fontWeight:400}}>{t.trims!.length} trims</span>}
                           </td>
                           <td style={{color:'var(--text-muted)'}}>{t.entryPrice ? `$${t.entryPrice.toFixed(2)}` : '—'}</td>

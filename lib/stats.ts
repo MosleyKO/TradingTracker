@@ -15,6 +15,7 @@ export interface Trade {
   bestTrimPnl?: number
   totalQty?: number
   trims?: Trim[]
+  account?: string
 }
 
 export interface Stats {
