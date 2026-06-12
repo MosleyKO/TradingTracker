@@ -181,11 +181,9 @@ export default function Home() {
           totalQty: t.totalQty,
           trims: t.trims.map(tr => ({ qty: tr.qty, price: tr.closePrice, pnl: tr.pnl, time: tr.time })),
         }))
-        setTosTrades(prev => {
-          const merged = merge(prev, trades)
-          saveTrades(merged, acct)
-          return merged
-        })
+        const merged = merge(tosTrades, trades)
+        setTosTrades(merged)
+        await saveTrades(merged, acct)
       } else {
         const completed = parseWebull(text)
         trades = completed.map(t => ({
@@ -199,11 +197,9 @@ export default function Home() {
           totalQty: t.totalQty,
           trims: t.trims.map(tr => ({ qty: tr.qty, price: tr.sellPrice, pnl: tr.pnl, time: tr.time })),
         }))
-        setWebullTrades(prev => {
-          const merged = merge(prev, trades)
-          saveTrades(merged, acct)
-          return merged
-        })
+        const merged = merge(webullTrades, trades)
+        setWebullTrades(merged)
+        await saveTrades(merged, acct)
       }
     }
     reader.readAsText(file)
