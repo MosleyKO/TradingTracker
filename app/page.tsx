@@ -9,7 +9,15 @@ import { createClient } from '@/lib/supabase'
 import EquityChart from '@/components/EquityChart'
 import MonthlyCalendar from '@/components/MonthlyCalendar'
 
-type Account = 'tos' | 'webull'
+type Broker = 'tos' | 'webull'
+
+interface TradingAccount {
+  id: string
+  name: string
+  broker: Broker
+  starting_balance: number | null
+}
+
 type Preset = 'today' | 'week' | 'month' | '3month' | 'year' | 'all' | 'custom'
 
 function getPresetRange(preset: Preset): { start: Date; end: Date } {
@@ -26,9 +34,14 @@ function getPresetRange(preset: Preset): { start: Date; end: Date } {
 }
 
 export default function Home() {
-  const [account, setAccount] = useState<Account>('tos')
-  const [tosTrades, setTosTrades] = useState<Trade[]>([])
-  const [webullTrades, setWebullTrades] = useState<Trade[]>([])
+  const [accounts, setAccounts] = useState<TradingAccount[]>([])
+  const [activeId, setActiveId] = useState<string>('')
+  const [tradesByAccount, setTradesByAccount] = useState<Record<string, Trade[]>>({})
+  const [addingAccount, setAddingAccount] = useState(false)
+  const [newAccountName, setNewAccountName] = useState('')
+  const [newAccountBroker, setNewAccountBroker] = useState<Broker>('tos')
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameInput, setRenameInput] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
   const [userEmail, setUserEmail] = useState<string | null>(null)
@@ -41,16 +54,15 @@ export default function Home() {
   type SortDir = 'asc' | 'desc'
   const [sortKey, setSortKey] = useState<SortKey>('date')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
-  const [tosStartingBalance, setTosStartingBalance] = useState<number | null>(null)
-  const [webullStartingBalance, setWebullStartingBalance] = useState<number | null>(null)
   const [balanceInput, setBalanceInput] = useState('')
   const [editingBalance, setEditingBalance] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const router = useRouter()
   const supabase = createClient()
 
-  const rawTrades = account === 'tos' ? tosTrades : webullTrades
-  const startingBalance = account === 'tos' ? tosStartingBalance : webullStartingBalance
+  const activeAccount = accounts.find(a => a.id === activeId) ?? null
+  const rawTrades = tradesByAccount[activeId] ?? []
+  const startingBalance = activeAccount?.starting_balance ?? null
 
   // Filtered trades based on date range
   const filteredTrades = useMemo(() => {
@@ -85,7 +97,7 @@ export default function Home() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push('/auth'); return }
       setUserEmail(user.email ?? null)
-      await Promise.all([loadTrades(user.id), loadSettings(user.id)])
+      await Promise.all([ensureAccounts(user.id), loadTrades(user.id)])
       setLoadingData(false)
     }
     init()
@@ -103,21 +115,60 @@ export default function Home() {
     trims: r.trims ? r.trims.map((tr: any) => ({ ...tr, time: new Date(tr.time) })) : undefined,
   })
 
-  const loadSettings = async (userId: string) => {
-    const { data } = await supabase.from('user_settings').select('*').eq('user_id', userId).maybeSingle()
-    if (data) {
-      setTosStartingBalance(data.tos_starting_balance ?? null)
-      setWebullStartingBalance(data.webull_starting_balance ?? null)
+  // Load accounts; auto-create defaults on first run (migrating old tos/webull data)
+  const ensureAccounts = async (userId: string) => {
+    const { data, error } = await supabase
+      .from('accounts')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true })
+    if (error) { console.error('Failed to load accounts:', error.message); return }
+
+    let accts = (data ?? []) as TradingAccount[]
+    if (accts.length === 0) {
+      // Carry over starting balances from the old user_settings table if present
+      const { data: settings } = await supabase.from('user_settings').select('*').eq('user_id', userId).maybeSingle()
+      const defaults = [
+        { id: 'tos', user_id: userId, name: 'ThinkorSwim', broker: 'tos', starting_balance: settings?.tos_starting_balance ?? null },
+        { id: 'webull', user_id: userId, name: 'Webull', broker: 'webull', starting_balance: settings?.webull_starting_balance ?? null },
+      ]
+      const { error: insError } = await supabase.from('accounts').insert(defaults)
+      if (insError) { alert(`Failed to create default accounts: ${insError.message}`); return }
+      accts = defaults.map(({ user_id, ...a }) => a) as TradingAccount[]
     }
+    setAccounts(accts)
+    setActiveId(prev => prev || accts[0].id)
   }
 
   const saveStartingBalance = async (value: number) => {
+    if (!activeAccount) return
+    const { error } = await supabase.from('accounts').update({ starting_balance: value }).eq('id', activeAccount.id)
+    if (error) { alert(`Failed to save balance: ${error.message}`); return }
+    setAccounts(prev => prev.map(a => a.id === activeAccount.id ? { ...a, starting_balance: value } : a))
+  }
+
+  const addAccount = async () => {
+    const name = newAccountName.trim()
+    if (!name) return
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
-    const field = account === 'tos' ? 'tos_starting_balance' : 'webull_starting_balance'
-    await supabase.from('user_settings').upsert({ user_id: user.id, [field]: value }, { onConflict: 'user_id' })
-    if (account === 'tos') setTosStartingBalance(value)
-    else setWebullStartingBalance(value)
+    const acct = { id: crypto.randomUUID(), user_id: user.id, name, broker: newAccountBroker, starting_balance: null }
+    const { error } = await supabase.from('accounts').insert(acct)
+    if (error) { alert(`Failed to add account: ${error.message}`); return }
+    const { user_id, ...row } = acct
+    setAccounts(prev => [...prev, row as TradingAccount])
+    setActiveId(row.id)
+    setAddingAccount(false)
+    setNewAccountName('')
+  }
+
+  const renameAccount = async (id: string) => {
+    const name = renameInput.trim()
+    setRenamingId(null)
+    if (!name) return
+    const { error } = await supabase.from('accounts').update({ name }).eq('id', id)
+    if (error) { alert(`Failed to rename: ${error.message}`); return }
+    setAccounts(prev => prev.map(a => a.id === id ? { ...a, name } : a))
   }
 
   const loadTrades = async (userId: string) => {
@@ -128,18 +179,21 @@ export default function Home() {
       .order('close_time', { ascending: true })
 
     if (error || !data) return
-    setTosTrades(data.filter((r: any) => r.account_type === 'tos').map(mapRow))
-    setWebullTrades(data.filter((r: any) => r.account_type === 'webull').map(mapRow))
+    const grouped: Record<string, Trade[]> = {}
+    for (const r of data as any[]) {
+      ;(grouped[r.account_type] ??= []).push(mapRow(r))
+    }
+    setTradesByAccount(grouped)
   }
 
-  const saveTrades = async (trades: Trade[], acct: Account) => {
+  const saveTrades = async (trades: Trade[], accountId: string) => {
     setSaving(true)
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { setSaving(false); return }
 
     const rows = trades.map(t => ({
       user_id: user.id,
-      account_type: acct,
+      account_type: accountId,
       symbol: t.symbol,
       pnl: t.pnl,
       close_time: t.closeTime.toISOString(),
@@ -151,20 +205,20 @@ export default function Home() {
       trims: t.trims ? t.trims.map(tr => ({ ...tr, time: tr.time.toISOString() })) : null,
     }))
 
-    const { error: delError } = await supabase.from('trades').delete().eq('user_id', user.id).eq('account_type', acct)
+    const { error: delError } = await supabase.from('trades').delete().eq('user_id', user.id).eq('account_type', accountId)
     if (delError) { alert(`Save failed (delete): ${delError.message}`); setSaving(false); return }
     const { error: insError } = await supabase.from('trades').insert(rows)
     if (insError) alert(`Save failed (insert): ${insError.message}`)
     setSaving(false)
   }
 
-  const handleFile = useCallback((file: File, acct: Account) => {
+  const handleFile = useCallback((file: File, acct: TradingAccount) => {
     const reader = new FileReader()
     reader.onload = async (e) => {
       const text = e.target?.result as string
       let trades: Trade[]
 
-      if (acct === 'tos') {
+      if (acct.broker === 'tos') {
         const completed = parseTOS(text)
         trades = completed.map(t => ({
           symbol: `${t.symbol} ${t.strike}${t.type[0]}`,
@@ -199,19 +253,18 @@ export default function Home() {
         .from('trades')
         .select('*')
         .eq('user_id', user.id)
-        .eq('account_type', acct)
+        .eq('account_type', acct.id)
       const existing = (existingRows ?? []).map(mapRow)
 
       const key = (t: Trade) => `${t.symbol}|${t.closeTime.toISOString()}|${t.pnl.toFixed(2)}|${t.totalQty ?? ''}`
       const seen = new Set(existing.map(key))
       const merged = [...existing, ...trades.filter(t => !seen.has(key(t)))]
 
-      if (acct === 'tos') setTosTrades(merged)
-      else setWebullTrades(merged)
-      await saveTrades(merged, acct)
+      setTradesByAccount(prev => ({ ...prev, [acct.id]: merged }))
+      await saveTrades(merged, acct.id)
     }
     reader.readAsText(file)
-  }, [account])
+  }, [])
 
   const handleSignOut = async () => {
     await supabase.auth.signOut()
@@ -222,12 +275,12 @@ export default function Home() {
     e.preventDefault()
     setDragOver(false)
     const file = e.dataTransfer.files[0]
-    if (file) handleFile(file, account)
-  }, [account, handleFile])
+    if (file && activeAccount) handleFile(file, activeAccount)
+  }, [activeAccount, handleFile])
 
   const onFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (file) handleFile(file, account)
+    if (file && activeAccount) handleFile(file, activeAccount)
     e.target.value = ''
   }
 
@@ -341,12 +394,58 @@ export default function Home() {
         <h1>Trade Journal</h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           <div className="tabs">
-            <button className={`tab ${account === 'tos' ? 'active' : ''}`} onClick={() => { setAccount('tos'); setExpandedRows(new Set()) }}>
-              ThinkorSwim
-            </button>
-            <button className={`tab ${account === 'webull' ? 'active' : ''}`} onClick={() => { setAccount('webull'); setExpandedRows(new Set()) }}>
-              Webull
-            </button>
+            {accounts.map(a => (
+              renamingId === a.id ? (
+                <input
+                  key={a.id}
+                  value={renameInput}
+                  onChange={e => setRenameInput(e.target.value)}
+                  onBlur={() => renameAccount(a.id)}
+                  onKeyDown={e => { if (e.key === 'Enter') renameAccount(a.id); if (e.key === 'Escape') setRenamingId(null) }}
+                  autoFocus
+                  style={{ width: 110, padding: '5px 10px', background: 'var(--surface2)', border: '1px solid var(--blue)', borderRadius: 6, color: 'var(--text)', fontSize: 13, outline: 'none' }}
+                />
+              ) : (
+                <button
+                  key={a.id}
+                  className={`tab ${activeId === a.id ? 'active' : ''}`}
+                  onClick={() => { setActiveId(a.id); setExpandedRows(new Set()) }}
+                  onDoubleClick={() => { setRenamingId(a.id); setRenameInput(a.name) }}
+                  title={`${a.broker === 'tos' ? 'ThinkorSwim' : 'Webull'} account — double-click to rename`}
+                >
+                  {a.name}
+                </button>
+              )
+            ))}
+            {addingAccount ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  value={newAccountName}
+                  onChange={e => setNewAccountName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') addAccount(); if (e.key === 'Escape') setAddingAccount(false) }}
+                  placeholder="Account name"
+                  autoFocus
+                  style={{ width: 120, padding: '5px 10px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 13, outline: 'none' }}
+                />
+                <select
+                  value={newAccountBroker}
+                  onChange={e => setNewAccountBroker(e.target.value as Broker)}
+                  style={{ padding: '5px 8px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12 }}
+                >
+                  <option value="tos">ThinkorSwim</option>
+                  <option value="webull">Webull</option>
+                </select>
+                <button onClick={addAccount} style={{ padding: '5px 10px', background: 'var(--blue)', border: 'none', borderRadius: 6, color: '#fff', fontSize: 12, cursor: 'pointer' }}>Add</button>
+                <button onClick={() => setAddingAccount(false)} style={{ padding: '5px 8px', background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>✕</button>
+              </div>
+            ) : (
+              <button
+                className="tab"
+                onClick={() => setAddingAccount(true)}
+                title="Add account"
+                style={{ fontWeight: 600 }}
+              >+</button>
+            )}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{userEmail}</div>
           <button onClick={handleSignOut} style={{
@@ -368,7 +467,7 @@ export default function Home() {
         >
           <div className="upload-icon" style={{ fontSize: 28, marginBottom: 6 }}>📂</div>
           <h3 style={{ fontSize: 14 }}>
-            {saving ? 'Saving...' : `Upload ${account === 'tos' ? 'ThinkorSwim Account Statement' : 'Webull Orders Records'} CSV`}
+            {saving ? 'Saving...' : `Upload ${activeAccount?.broker === 'webull' ? 'Webull Orders Records' : 'ThinkorSwim Account Statement'} CSV to ${activeAccount?.name ?? ''}`}
           </h3>
           <p style={{ fontSize: 12 }}>{saving ? 'Storing your trades...' : 'Click or drag & drop — saved automatically'}</p>
         </div>
