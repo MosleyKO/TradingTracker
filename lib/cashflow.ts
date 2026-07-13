@@ -17,7 +17,7 @@ export const EXPENSE_CATEGORIES = [
 ]
 
 export const INCOME_CATEGORIES = [
-  'Salary', 'Business Income', 'Trading Income', 'Side Income', 'Interest', 'Gift', 'Other',
+  'Salary', 'Business Income', 'Trading Income', 'Side Income', 'Asset Sale', 'Interest', 'Gift', 'Other',
 ]
 
 export function totals(transactions: Transaction[]) {
