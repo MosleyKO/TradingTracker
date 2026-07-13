@@ -45,6 +45,7 @@ export default function NetWorthPage() {
   const [editorOpen, setEditorOpen] = useState(false)
   const [editorDate, setEditorDate] = useState(todayStr())
   const [editorValues, setEditorValues] = useState<Record<string, string>>({})
+  const [tradingEstimates, setTradingEstimates] = useState<Record<string, number>>({})
 
   useEffect(() => {
     const init = async () => {
@@ -63,6 +64,26 @@ export default function NetWorthPage() {
     ])
     setAccounts((accts ?? []) as FinancialAccount[])
     setBalances((bals ?? []) as AccountBalance[])
+    await loadTradingEstimates(userId)
+  }
+
+  // Trading accounts (Webull/Swings/Day Trades) are also net-worth accounts here —
+  // pull a live starting-balance + realized-P&L estimate as a reference hint in the
+  // snapshot editor. Never auto-fills over a real entry; the broker balance is truth.
+  const loadTradingEstimates = async (userId: string) => {
+    const [{ data: tAccounts }, { data: tTrades }] = await Promise.all([
+      supabase.from('accounts').select('id, name, starting_balance').eq('user_id', userId),
+      supabase.from('trades').select('account_type, pnl').eq('user_id', userId),
+    ])
+    const pnlByAccountId = new Map<string, number>()
+    for (const t of (tTrades ?? []) as any[]) {
+      pnlByAccountId.set(t.account_type, (pnlByAccountId.get(t.account_type) ?? 0) + t.pnl)
+    }
+    const estimates: Record<string, number> = {}
+    for (const a of (tAccounts ?? []) as any[]) {
+      estimates[a.name] = (a.starting_balance ?? 0) + (pnlByAccountId.get(a.id) ?? 0)
+    }
+    setTradingEstimates(estimates)
   }
 
   const activeAccounts = useMemo(() => accounts.filter(a => a.is_active), [accounts])
@@ -128,7 +149,8 @@ export default function NetWorthPage() {
     const vals: Record<string, string> = {}
     for (const a of activeAccounts) {
       const b = latest.get(a.id)
-      vals[a.id] = b ? String(b.balance) : ''
+      const estimate = tradingEstimates[a.name]
+      vals[a.id] = b ? String(b.balance) : estimate !== undefined ? String(Math.round(estimate)) : ''
     }
     setEditorValues(vals)
     setEditorDate(todayStr())
@@ -349,6 +371,11 @@ export default function NetWorthPage() {
                     <div style={{ fontSize: 11, color: a.kind === 'liability' ? 'var(--red)' : 'var(--text-muted)' }}>
                       {a.category}{a.kind === 'liability' ? ' · owed' : ''}
                     </div>
+                    {tradingEstimates[a.name] !== undefined && (
+                      <div style={{ fontSize: 10, color: 'var(--blue)', marginTop: 1 }}>
+                        ≈ {fmt(tradingEstimates[a.name])} from trading tracker
+                      </div>
+                    )}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>$</span>
