@@ -1,12 +1,13 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase'
 import SectionNav from '@/components/SectionNav'
 import CashFlowChart from '@/components/CashFlowChart'
 import { Field, inputStyle } from '@/components/FormField'
 import { Preset, PRESETS, getPresetRange, todayStr } from '@/lib/dateRange'
+import { parseBankStatement, bankTxKey, ParsedBankTransaction } from '@/lib/parseBankStatement'
 import {
   Transaction,
   TxType,
@@ -16,6 +17,11 @@ import {
   monthlyCashFlow,
   categoryBreakdown,
 } from '@/lib/cashflow'
+
+interface ReviewRow extends ParsedBankTransaction {
+  include: boolean
+  isDuplicate: boolean
+}
 
 const fmt = (n: number) =>
   n >= 0
@@ -43,6 +49,10 @@ export default function CashFlowPage() {
   const [formAmount, setFormAmount] = useState('')
   const [formDescription, setFormDescription] = useState('')
   const [formRecurring, setFormRecurring] = useState(false)
+
+  const [uploadRows, setUploadRows] = useState<ReviewRow[] | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     const init = async () => {
@@ -124,6 +134,51 @@ export default function CashFlowPage() {
     setTransactions(prev => prev.filter(t => t.id !== id))
   }
 
+  const onStatementFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string
+      const parsed = parseBankStatement(text)
+      const existingKeys = new Set(transactions.map(t => bankTxKey({ date: t.date, amount: t.amount, type: t.type })))
+      const rows: ReviewRow[] = parsed.map(p => {
+        const isDuplicate = existingKeys.has(bankTxKey(p))
+        return { ...p, isDuplicate, include: !p.excluded && !isDuplicate }
+      })
+      setUploadRows(rows)
+    }
+    reader.readAsText(file)
+  }
+
+  const updateUploadRow = (idx: number, patch: Partial<ReviewRow>) => {
+    setUploadRows(prev => prev ? prev.map((r, i) => i === idx ? { ...r, ...patch } : r) : prev)
+  }
+
+  const importUploadedRows = async () => {
+    if (!uploadRows) return
+    const toInsert = uploadRows.filter(r => r.include)
+    if (toInsert.length === 0) { setUploadRows(null); return }
+    setUploading(true)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) { setUploading(false); return }
+    const rows = toInsert.map(r => ({
+      user_id: user.id,
+      date: r.date,
+      amount: r.amount,
+      category: r.category,
+      description: r.description || null,
+      type: r.type,
+      recurring: r.recurring,
+    }))
+    const { error } = await supabase.from('transactions').insert(rows)
+    if (error) { alert(`Failed to import: ${error.message}`); setUploading(false); return }
+    await loadTransactions(user.id)
+    setUploading(false)
+    setUploadRows(null)
+  }
+
   if (loadingData) {
     return (
       <>
@@ -141,17 +196,30 @@ export default function CashFlowPage() {
       <div className="container">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
           <h1 style={{ fontSize: 20, fontWeight: 600 }}>Cash Flow</h1>
-          <button
-            onClick={() => setAdding(v => !v)}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px',
-              background: 'var(--blue)', border: 'none', borderRadius: 8, color: '#fff',
-              cursor: 'pointer', fontSize: 13, fontWeight: 600,
-            }}
-          >
-            <span style={{ fontSize: 16, lineHeight: 1 }}>{adding ? '×' : '+'}</span> {adding ? 'Close' : 'Add Transaction'}
-          </button>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px',
+                background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8,
+                color: 'var(--text)', cursor: 'pointer', fontSize: 13, fontWeight: 500,
+              }}
+            >
+              📂 Upload Statement
+            </button>
+            <button
+              onClick={() => setAdding(v => !v)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px',
+                background: 'var(--blue)', border: 'none', borderRadius: 8, color: '#fff',
+                cursor: 'pointer', fontSize: 13, fontWeight: 600,
+              }}
+            >
+              <span style={{ fontSize: 16, lineHeight: 1 }}>{adding ? '×' : '+'}</span> {adding ? 'Close' : 'Add Transaction'}
+            </button>
+          </div>
         </div>
+        <input ref={fileInputRef} type="file" accept=".csv" onChange={onStatementFile} style={{ display: 'none' }} />
 
         {/* ── Add transaction form ── */}
         {adding && (
@@ -221,14 +289,22 @@ export default function CashFlowPage() {
           <div className="empty-state">
             <h2>Track your cash flow</h2>
             <p>Log income and expenses to see monthly trends and where your money goes.</p>
-            {!adding && (
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 16 }}>
               <button
-                onClick={() => setAdding(true)}
-                style={{ marginTop: 16, padding: '10px 20px', background: 'var(--blue)', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontSize: 14, fontWeight: 600 }}
+                onClick={() => fileInputRef.current?.click()}
+                style={{ padding: '10px 20px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text)', cursor: 'pointer', fontSize: 14, fontWeight: 500 }}
               >
-                + Add your first transaction
+                📂 Upload a Statement
               </button>
-            )}
+              {!adding && (
+                <button
+                  onClick={() => setAdding(true)}
+                  style={{ padding: '10px 20px', background: 'var(--blue)', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontSize: 14, fontWeight: 600 }}
+                >
+                  + Add your first transaction
+                </button>
+              )}
+            </div>
           </div>
         ) : (
           <>
@@ -367,6 +443,98 @@ export default function CashFlowPage() {
           </>
         )}
       </div>
+
+      {/* ── Statement import review ── */}
+      {uploadRows && (
+        <div
+          onClick={() => !uploading && setUploadRows(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '5vh', zIndex: 50 }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            className="panel"
+            style={{ width: 820, maxWidth: '95vw', maxHeight: '88vh', display: 'flex', flexDirection: 'column', padding: 0 }}
+          >
+            <div style={{ padding: '18px 20px', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Review Import</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                {uploadRows.length} rows found
+                {' · '}{uploadRows.filter(r => r.excluded).length} self-transfers excluded
+                {' · '}{uploadRows.filter(r => r.isDuplicate).length} already imported
+                {' · '}{uploadRows.filter(r => r.needsReview).length} flagged for review
+              </div>
+            </div>
+            <div className="subtle-scroll" style={{ padding: '4px 20px', overflowY: 'auto', flex: 1 }}>
+              {uploadRows.map((r, idx) => (
+                <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid var(--border)', opacity: r.include ? 1 : 0.45 }}>
+                  <input type="checkbox" checked={r.include} onChange={e => updateUploadRow(idx, { include: e.target.checked })} />
+                  <div style={{ width: 60, fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
+                    {new Date(r.date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                  </div>
+                  <input
+                    value={r.description}
+                    onChange={e => updateUploadRow(idx, { description: e.target.value })}
+                    style={{ ...inputStyle(180), padding: '5px 8px', fontSize: 12, flexShrink: 1 }}
+                  />
+                  <select
+                    value={r.type}
+                    onChange={e => {
+                      const type = e.target.value as TxType
+                      const cats = type === 'expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES
+                      updateUploadRow(idx, { type, category: (cats as string[]).includes(r.category) ? r.category : cats[0] })
+                    }}
+                    style={{ ...inputStyle(76), padding: '5px 4px', fontSize: 11, flexShrink: 0 }}
+                  >
+                    <option value="expense">Expense</option>
+                    <option value="income">Income</option>
+                  </select>
+                  <select
+                    value={r.category}
+                    onChange={e => updateUploadRow(idx, { category: e.target.value })}
+                    style={{ ...inputStyle(120), padding: '5px 4px', fontSize: 11, flexShrink: 0 }}
+                  >
+                    {(r.type === 'expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES).map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <div style={{ width: 76, textAlign: 'right', fontSize: 12, fontWeight: 600, color: r.type === 'income' ? 'var(--green)' : 'var(--red)', flexShrink: 0 }}>
+                    {r.type === 'income' ? '+' : '-'}{fmt(r.amount)}
+                  </div>
+                  <label title="Recurring" style={{ display: 'flex', alignItems: 'center', gap: 2, fontSize: 13, color: 'var(--text-muted)', flexShrink: 0 }}>
+                    <input type="checkbox" checked={r.recurring} onChange={e => updateUploadRow(idx, { recurring: e.target.checked })} />
+                    ↻
+                  </label>
+                  <div style={{ width: 76, flexShrink: 0 }}>
+                    {r.isDuplicate && (
+                      <span style={{ fontSize: 9, color: 'var(--text-muted)', background: 'var(--surface2)', padding: '2px 5px', borderRadius: 4 }}>duplicate</span>
+                    )}
+                    {!r.isDuplicate && r.excluded && (
+                      <span title={r.excludeReason ?? ''} style={{ fontSize: 9, color: 'var(--text-muted)', background: 'var(--surface2)', padding: '2px 5px', borderRadius: 4 }}>self-transfer</span>
+                    )}
+                    {!r.isDuplicate && !r.excluded && r.needsReview && (
+                      <span style={{ fontSize: 9, color: 'var(--blue)', background: 'rgba(91,140,245,0.12)', padding: '2px 5px', borderRadius: 4 }}>review</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border)', display: 'flex', gap: 10 }}>
+              <button
+                onClick={importUploadedRows}
+                disabled={uploading}
+                style={{ flex: 1, padding: '10px', background: 'var(--blue)', border: 'none', borderRadius: 8, color: '#fff', fontSize: 14, fontWeight: 600, cursor: uploading ? 'not-allowed' : 'pointer', opacity: uploading ? 0.7 : 1 }}
+              >
+                {uploading ? 'Importing...' : `Import ${uploadRows.filter(r => r.include).length} Transactions`}
+              </button>
+              <button
+                onClick={() => setUploadRows(null)}
+                disabled={uploading}
+                style={{ padding: '10px 16px', background: 'none', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-muted)', fontSize: 14, cursor: 'pointer' }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }
