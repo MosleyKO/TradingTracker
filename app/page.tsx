@@ -1,13 +1,13 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase'
 import SectionNav from '@/components/SectionNav'
-import { calcStats, Stats, Trade } from '@/lib/stats'
+import { calcStats, Trade } from '@/lib/stats'
 import { Transaction, totals as cashFlowTotals } from '@/lib/cashflow'
-import { getPresetRange } from '@/lib/dateRange'
+import { Preset, PRESETS, getPresetRange } from '@/lib/dateRange'
 import { FinancialAccount, AccountBalance, netWorthCurve } from '@/lib/networth'
 
 const fmt = (n: number) =>
@@ -30,88 +30,42 @@ export default function OverviewPage() {
   const supabase = createClient()
   const [loading, setLoading] = useState(true)
 
-  const [netWorth, setNetWorth] = useState<{ current: number; delta: number | null } | null>(null)
-  const [cashFlowMonth, setCashFlowMonth] = useState<{ income: number; expense: number; net: number } | null>(null)
-  const [hasCashFlowData, setHasCashFlowData] = useState(false)
-  const [tradingStats, setTradingStats] = useState<Stats | null>(null)
-  const [activity, setActivity] = useState<ActivityItem[]>([])
+  const [netWorthCurveData, setNetWorthCurveData] = useState<{ date: string; net: number }[]>([])
+  const [allTransactions, setAllTransactions] = useState<Transaction[]>([])
+  const [allTrades, setAllTrades] = useState<Trade[]>([])
+
+  const [preset, setPreset] = useState<Preset>('month')
+  const [customStart, setCustomStart] = useState('')
+  const [customEnd, setCustomEnd] = useState('')
 
   useEffect(() => {
     const init = async () => {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push('/auth'); return }
-      // Each loader returns its own activity slice; combined and set ONCE
-      // here rather than each loader mutating shared state independently —
-      // that incremental-merge approach duplicated entries whenever this
-      // effect ran more than once (e.g. React Strict Mode's dev double-invoke).
-      const [nwActivity, cfActivity, trActivity] = await Promise.all([
-        loadNetWorth(user.id), loadCashFlow(user.id), loadTrading(user.id),
-      ])
-      setActivity(
-        [...nwActivity, ...cfActivity, ...trActivity]
-          .sort((a, b) => b.date.getTime() - a.date.getTime())
-          .slice(0, 8)
-      )
+      await Promise.all([loadNetWorth(user.id), loadCashFlow(user.id), loadTrading(user.id)])
       setLoading(false)
     }
     init()
   }, [])
 
-  const loadNetWorth = async (userId: string): Promise<ActivityItem[]> => {
+  const loadNetWorth = async (userId: string) => {
     const [{ data: accts }, { data: bals }] = await Promise.all([
       supabase.from('financial_accounts').select('*').eq('user_id', userId),
       supabase.from('account_balances').select('account_id, as_of, balance').eq('user_id', userId).order('as_of', { ascending: true }),
     ])
-    const accounts = (accts ?? []) as FinancialAccount[]
-    const balances = (bals ?? []) as AccountBalance[]
-    const curve = netWorthCurve(accounts, balances)
-    if (curve.length > 0) {
-      const current = curve[curve.length - 1].net
-      const delta = curve.length > 1 ? current - curve[curve.length - 2].net : null
-      setNetWorth({ current, delta })
-    }
-    // Show the change since the prior snapshot, not the raw net-worth value —
-    // "+$154,863" next to "snapshot" would misleadingly read as a gain.
-    return curve.slice(-2).map(d => {
-      const idx = curve.findIndex(c => c.date === d.date)
-      const prevPoint = idx > 0 ? curve[idx - 1] : null
-      const delta = prevPoint ? d.net - prevPoint.net : d.net
-      return {
-        date: new Date(d.date + 'T12:00:00'),
-        label: 'Net worth snapshot',
-        sub: 'Net Worth',
-        amount: delta,
-        color: 'var(--blue)',
-      }
-    }).reverse()
+    setNetWorthCurveData(netWorthCurve((accts ?? []) as FinancialAccount[], (bals ?? []) as AccountBalance[]))
   }
 
-  const loadCashFlow = async (userId: string): Promise<ActivityItem[]> => {
+  const loadCashFlow = async (userId: string) => {
     const { data } = await supabase
       .from('transactions')
       .select('*')
       .eq('user_id', userId)
       .order('date', { ascending: false })
-    const all = (data ?? []) as Transaction[]
-    setHasCashFlowData(all.length > 0)
-
-    const { start, end } = getPresetRange('month')
-    const thisMonth = all.filter(t => {
-      const d = new Date(t.date + 'T12:00:00')
-      return d >= start && d <= end
-    })
-    setCashFlowMonth(cashFlowTotals(thisMonth))
-
-    return all.slice(0, 5).map(t => ({
-      date: new Date(t.date + 'T12:00:00'),
-      label: t.description || t.category || (t.type === 'income' ? 'Income' : 'Expense'),
-      sub: 'Cash Flow',
-      amount: t.type === 'income' ? t.amount : -t.amount,
-      color: t.type === 'income' ? 'var(--green)' : 'var(--red)',
-    }))
+    setAllTransactions((data ?? []) as Transaction[])
   }
 
-  const loadTrading = async (userId: string): Promise<ActivityItem[]> => {
+  const loadTrading = async (userId: string) => {
     const { data } = await supabase
       .from('trades')
       .select('*')
@@ -128,19 +82,93 @@ export default function OverviewPage() {
       bestTrimPnl: r.best_trim_pnl ?? undefined,
       trims: r.trims ? r.trims.map((tr: any) => ({ ...tr, time: new Date(tr.time) })) : undefined,
     }))
-    setTradingStats(calcStats(trades))
-
-    return [...trades]
-      .sort((a, b) => b.closeTime.getTime() - a.closeTime.getTime())
-      .slice(0, 5)
-      .map(t => ({
-        date: t.closeTime,
-        label: t.symbol,
-        sub: 'Trading',
-        amount: t.pnl,
-        color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)',
-      }))
+    setAllTrades(trades)
   }
+
+  // Everything below is derived client-side from the raw data already
+  // fetched above — switching periods never re-hits the network.
+  const range = useMemo(() => {
+    if (preset === 'custom') {
+      return {
+        start: customStart ? new Date(customStart + 'T00:00:00') : new Date(0),
+        end: customEnd ? new Date(customEnd + 'T23:59:59') : new Date(),
+      }
+    }
+    return getPresetRange(preset)
+  }, [preset, customStart, customEnd])
+
+  const hasNetWorthData = netWorthCurveData.length > 0
+  const hasCashFlowData = allTransactions.length > 0
+  const hasTradingData = allTrades.length > 0
+
+  const netWorth = useMemo(() => {
+    if (!hasNetWorthData) return null
+    const current = netWorthCurveData[netWorthCurveData.length - 1].net
+    // Compare to the latest snapshot at/before the period start. Compared as
+    // date strings (not Date objects) — snapshot dates are stamped at noon
+    // while range.start is midnight of the same calendar day, so a Date
+    // comparison would wrongly exclude a snapshot taken ON the period's
+    // first day. Falls back to the earliest snapshot if none qualifies
+    // (e.g. all history falls inside the selected period).
+    const rangeStartStr = `${range.start.getFullYear()}-${String(range.start.getMonth() + 1).padStart(2, '0')}-${String(range.start.getDate()).padStart(2, '0')}`
+    const priorInRange = [...netWorthCurveData].reverse().find(d => d.date <= rangeStartStr)
+    const comparison = priorInRange ?? netWorthCurveData[0]
+    const delta = comparison ? current - comparison.net : null
+    const sinceLabel = comparison ? new Date(comparison.date + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : null
+    return { current, delta, sinceLabel }
+  }, [netWorthCurveData, hasNetWorthData, range])
+
+  const filteredTransactions = useMemo(
+    () => allTransactions.filter(t => {
+      const d = new Date(t.date + 'T12:00:00')
+      return d >= range.start && d <= range.end
+    }),
+    [allTransactions, range]
+  )
+  const cashFlowStats = useMemo(() => cashFlowTotals(filteredTransactions), [filteredTransactions])
+
+  const filteredTrades = useMemo(
+    () => allTrades.filter(t => t.closeTime >= range.start && t.closeTime <= range.end),
+    [allTrades, range]
+  )
+  const tradingStats = useMemo(() => calcStats(filteredTrades), [filteredTrades])
+
+  const activity = useMemo(() => {
+    const nwActivity: ActivityItem[] = netWorthCurveData
+      .filter(d => { const dt = new Date(d.date + 'T12:00:00'); return dt >= range.start && dt <= range.end })
+      .map(d => {
+        const idx = netWorthCurveData.findIndex(c => c.date === d.date)
+        const prevPoint = idx > 0 ? netWorthCurveData[idx - 1] : null
+        const delta = prevPoint ? d.net - prevPoint.net : d.net
+        return {
+          date: new Date(d.date + 'T12:00:00'),
+          label: 'Net worth snapshot',
+          sub: 'Net Worth',
+          amount: delta,
+          color: 'var(--blue)',
+        }
+      })
+
+    const cfActivity: ActivityItem[] = filteredTransactions.map(t => ({
+      date: new Date(t.date + 'T12:00:00'),
+      label: t.description || t.category || (t.type === 'income' ? 'Income' : 'Expense'),
+      sub: 'Cash Flow',
+      amount: t.type === 'income' ? t.amount : -t.amount,
+      color: t.type === 'income' ? 'var(--green)' : 'var(--red)',
+    }))
+
+    const trActivity: ActivityItem[] = filteredTrades.map(t => ({
+      date: t.closeTime,
+      label: t.symbol,
+      sub: 'Trading',
+      amount: t.pnl,
+      color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)',
+    }))
+
+    return [...nwActivity, ...cfActivity, ...trActivity]
+      .sort((a, b) => b.date.getTime() - a.date.getTime())
+      .slice(0, 8)
+  }, [netWorthCurveData, filteredTransactions, filteredTrades, range])
 
   if (loading) {
     return (
@@ -153,13 +181,40 @@ export default function OverviewPage() {
     )
   }
 
-  const hasTradingData = !!tradingStats && tradingStats.tradeCount > 0
+  const periodLabel = PRESETS.find(p => p.key === preset)?.label ?? ''
 
   return (
     <>
       <SectionNav />
       <div className="container">
-        <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 24 }}>Overview</h1>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 600 }}>Overview</h1>
+        </div>
+
+        {/* ── Period filter ── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 24, flexWrap: 'wrap' }}>
+          {PRESETS.map(p => (
+            <button
+              key={p.key}
+              onClick={() => setPreset(p.key)}
+              style={{
+                padding: '5px 14px', borderRadius: 6, border: '1px solid var(--border)',
+                background: preset === p.key ? 'var(--blue)' : 'var(--surface)',
+                color: preset === p.key ? '#fff' : 'var(--text-muted)',
+                cursor: 'pointer', fontSize: 12, fontWeight: preset === p.key ? 600 : 400,
+              }}
+            >{p.label}</button>
+          ))}
+          {preset === 'custom' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 4 }}>
+              <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)}
+                style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '4px 10px', fontSize: 12 }} />
+              <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>to</span>
+              <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)}
+                style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', padding: '4px 10px', fontSize: 12 }} />
+            </div>
+          )}
+        </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 24 }}>
           {/* Net Worth card */}
@@ -173,7 +228,7 @@ export default function OverviewPage() {
                   </div>
                   {netWorth.delta !== null && (
                     <div style={{ fontSize: 12, fontWeight: 600, color: netWorth.delta >= 0 ? 'var(--green)' : 'var(--red)', marginTop: 6 }}>
-                      {netWorth.delta >= 0 ? '▲' : '▼'} {fmt(Math.abs(netWorth.delta))} since last snapshot
+                      {netWorth.delta >= 0 ? '▲' : '▼'} {fmt(Math.abs(netWorth.delta))} since {netWorth.sinceLabel}
                     </div>
                   )}
                 </>
@@ -189,15 +244,15 @@ export default function OverviewPage() {
           {/* Cash Flow card */}
           <Link href="/cash-flow" style={{ textDecoration: 'none' }}>
             <div className="panel" style={{ cursor: 'pointer', transition: 'border-color 0.15s' }}>
-              <div className="panel-title">Cash Flow (This Month)</div>
-              {hasCashFlowData && cashFlowMonth ? (
+              <div className="panel-title">Cash Flow ({periodLabel})</div>
+              {hasCashFlowData ? (
                 <>
-                  <div style={{ fontSize: 28, fontWeight: 800, color: cashFlowMonth.net >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                    {fmt(cashFlowMonth.net)}
+                  <div style={{ fontSize: 28, fontWeight: 800, color: cashFlowStats.net >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                    {fmt(cashFlowStats.net)}
                   </div>
                   <div style={{ display: 'flex', gap: 12, marginTop: 6, fontSize: 12 }}>
-                    <span style={{ color: 'var(--text-muted)' }}>Income <span style={{ color: 'var(--green)', fontWeight: 600 }}>{fmt(cashFlowMonth.income)}</span></span>
-                    <span style={{ color: 'var(--text-muted)' }}>Expenses <span style={{ color: 'var(--red)', fontWeight: 600 }}>{fmt(cashFlowMonth.expense)}</span></span>
+                    <span style={{ color: 'var(--text-muted)' }}>Income <span style={{ color: 'var(--green)', fontWeight: 600 }}>{fmt(cashFlowStats.income)}</span></span>
+                    <span style={{ color: 'var(--text-muted)' }}>Expenses <span style={{ color: 'var(--red)', fontWeight: 600 }}>{fmt(cashFlowStats.expense)}</span></span>
                   </div>
                 </>
               ) : (
@@ -212,15 +267,17 @@ export default function OverviewPage() {
           {/* Trading card */}
           <Link href="/trading" style={{ textDecoration: 'none' }}>
             <div className="panel" style={{ cursor: 'pointer', transition: 'border-color 0.15s' }}>
-              <div className="panel-title">Trading (All Time)</div>
-              {hasTradingData && tradingStats ? (
+              <div className="panel-title">Trading ({periodLabel})</div>
+              {hasTradingData ? (
                 <>
                   <div style={{ fontSize: 28, fontWeight: 800, color: tradingStats.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
                     {fmt(tradingStats.netPnl)}
                   </div>
                   <div style={{ display: 'flex', gap: 12, marginTop: 6, fontSize: 12 }}>
                     <span style={{ color: 'var(--text-muted)' }}>{tradingStats.tradeCount} trades</span>
-                    <span style={{ color: tradingStats.winRate >= 0.5 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>{pct(tradingStats.winRate)} win rate</span>
+                    {tradingStats.tradeCount > 0 && (
+                      <span style={{ color: tradingStats.winRate >= 0.5 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>{pct(tradingStats.winRate)} win rate</span>
+                    )}
                   </div>
                 </>
               ) : (
@@ -235,10 +292,10 @@ export default function OverviewPage() {
 
         {/* Recent activity */}
         <div className="panel">
-          <div className="panel-title">Recent Activity</div>
+          <div className="panel-title">Activity ({periodLabel})</div>
           {activity.length === 0 ? (
             <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '8px 0' }}>
-              Nothing yet — add a trade, a transaction, or a net worth snapshot to see it here.
+              Nothing in this period — try a different date range.
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
