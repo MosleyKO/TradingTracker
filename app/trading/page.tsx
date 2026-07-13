@@ -22,6 +22,13 @@ interface TradingAccount {
   starting_balance: number | null
 }
 
+interface CashFlow {
+  account_id: string
+  date: string
+  amount: number
+  type: 'deposit' | 'withdrawal'
+}
+
 export default function Home() {
   const [accounts, setAccounts] = useState<TradingAccount[]>([])
   const [activeId, setActiveId] = useState<string>('')
@@ -60,6 +67,16 @@ export default function Home() {
   const [valueInput, setValueInput] = useState('')
   const [updatingValue, setUpdatingValue] = useState(false)
   const [showValueEditor, setShowValueEditor] = useState(false)
+
+  // Deposits/withdrawals: show up in the account value above (it's your
+  // real balance), but are subtracted back out of the period delta so that
+  // number reflects actual trading gain/loss, not cash you moved in or out.
+  const [cashFlows, setCashFlows] = useState<CashFlow[]>([])
+  const [showCashFlowEditor, setShowCashFlowEditor] = useState(false)
+  const [cashFlowType, setCashFlowType] = useState<'deposit' | 'withdrawal'>('deposit')
+  const [cashFlowAmount, setCashFlowAmount] = useState('')
+  const [cashFlowDate, setCashFlowDate] = useState(todayStr())
+  const [savingCashFlow, setSavingCashFlow] = useState(false)
 
   const ALL_ID = '__all__'
   const isAllView = activeId === ALL_ID
@@ -118,32 +135,70 @@ export default function Home() {
     [isAllView, linkedFinancialAccounts, activeAccount]
   )
 
+  const activeLinkedIds = useMemo(
+    () => (isAllView ? linkedFinancialAccounts.map(fa => fa.id) : activeLinkedAccountId ? [activeLinkedAccountId] : []),
+    [isAllView, linkedFinancialAccounts, activeLinkedAccountId]
+  )
+
   const valueCurve = useMemo(() => {
-    const ids = isAllView ? new Set(linkedFinancialAccounts.map(fa => fa.id)) : new Set(activeLinkedAccountId ? [activeLinkedAccountId] : [])
+    const ids = new Set(activeLinkedIds)
     const map = new Map<string, number>()
     for (const b of accountBalances) {
       if (!ids.has(b.account_id)) continue
       map.set(b.as_of, (map.get(b.as_of) ?? 0) + b.balance)
     }
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([date, net]) => ({ date, net }))
-  }, [accountBalances, isAllView, linkedFinancialAccounts, activeLinkedAccountId])
+  }, [accountBalances, activeLinkedIds])
 
   const hasValueData = valueCurve.length > 0
   const currentValue = hasValueData ? valueCurve[valueCurve.length - 1].net : null
 
-  // Same period the trade stats above use, applied to the value curve — the
-  // string comparison (not Date objects) avoids excluding a snapshot taken
+  // Same period the trade stats above use, applied to the value curve.
+  const valueRange = useMemo(() => {
+    if (preset === 'custom') {
+      return { start: customStart ? new Date(customStart + 'T00:00:00') : new Date(0), end: customEnd ? new Date(customEnd + 'T23:59:59') : new Date() }
+    }
+    return getPresetRange(preset)
+  }, [preset, customStart, customEnd])
+
+  // String comparison (not Date objects) avoids excluding a snapshot taken
   // ON the period's first day (see Overview's identical fix).
   const valueDelta = useMemo(() => {
     if (!hasValueData || currentValue === null) return null
-    let start: Date
-    if (preset === 'custom') start = customStart ? new Date(customStart + 'T00:00:00') : new Date(0)
-    else ({ start } = getPresetRange(preset))
-    const startStr = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`
+    const startStr = `${valueRange.start.getFullYear()}-${String(valueRange.start.getMonth() + 1).padStart(2, '0')}-${String(valueRange.start.getDate()).padStart(2, '0')}`
     const priorPoint = [...valueCurve].reverse().find(d => d.date <= startStr)
     const comparison = priorPoint ?? valueCurve[0]
     return comparison ? currentValue - comparison.net : null
-  }, [valueCurve, hasValueData, currentValue, preset, customStart])
+  }, [valueCurve, hasValueData, currentValue, valueRange])
+
+  // Deposits/withdrawals during the selected period, for the linked
+  // account(s) currently in view.
+  const netCashFlowInPeriod = useMemo(() => {
+    const ids = new Set(activeLinkedIds)
+    return cashFlows
+      .filter(cf => ids.has(cf.account_id))
+      .filter(cf => { const d = new Date(cf.date + 'T12:00:00'); return d >= valueRange.start && d <= valueRange.end })
+      .reduce((s, cf) => s + (cf.type === 'deposit' ? cf.amount : -cf.amount), 0)
+  }, [cashFlows, activeLinkedIds, valueRange])
+
+  // The actual trading gain/loss, net of any money moved in or out —
+  // this is the number that answers "did I make money," not just "did my
+  // balance go up."
+  const tradingGain = valueDelta !== null ? valueDelta - netCashFlowInPeriod : null
+
+  // Shared by saveAccountValue and saveCashFlow — both need a
+  // financial_accounts row to write against, created on first use.
+  const ensureLinkedFinancialAccount = async (userId: string): Promise<string | null> => {
+    if (activeLinkedAccountId) return activeLinkedAccountId
+    if (!activeAccount) return null
+    const { data, error } = await supabase.from('financial_accounts').insert({
+      user_id: userId, name: activeAccount.name, kind: 'asset', category: 'Investment',
+      display_order: financialAccounts.length, is_active: true,
+    }).select().single()
+    if (error) { alert(`Failed to set up value tracking: ${error.message}`); return null }
+    setFinancialAccounts(prev => [...prev, data as FinancialAccount])
+    return data.id
+  }
 
   const saveAccountValue = async () => {
     const val = parseFloat(valueInput)
@@ -152,16 +207,8 @@ export default function Home() {
     if (!user) return
     setUpdatingValue(true)
 
-    let financialAccountId = activeLinkedAccountId
-    if (!financialAccountId) {
-      const { data, error } = await supabase.from('financial_accounts').insert({
-        user_id: user.id, name: activeAccount.name, kind: 'asset', category: 'Investment',
-        display_order: financialAccounts.length, is_active: true,
-      }).select().single()
-      if (error) { alert(`Failed to set up value tracking: ${error.message}`); setUpdatingValue(false); return }
-      financialAccountId = data.id
-      setFinancialAccounts(prev => [...prev, data as FinancialAccount])
-    }
+    const financialAccountId = await ensureLinkedFinancialAccount(user.id)
+    if (!financialAccountId) { setUpdatingValue(false); return }
 
     const { error: balError } = await supabase
       .from('account_balances')
@@ -172,6 +219,27 @@ export default function Home() {
     setUpdatingValue(false)
     setShowValueEditor(false)
     setValueInput('')
+  }
+
+  const saveCashFlow = async () => {
+    const amount = parseFloat(cashFlowAmount)
+    if (isNaN(amount) || amount <= 0 || !activeAccount || !cashFlowDate) return
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    setSavingCashFlow(true)
+
+    const financialAccountId = await ensureLinkedFinancialAccount(user.id)
+    if (!financialAccountId) { setSavingCashFlow(false); return }
+
+    const { error } = await supabase.from('account_cash_flows').insert({
+      user_id: user.id, account_id: financialAccountId, date: cashFlowDate, amount, type: cashFlowType,
+    })
+    if (error) { alert(`Failed to log ${cashFlowType}: ${error.message}`); setSavingCashFlow(false); return }
+
+    await loadAccountValues(user.id)
+    setSavingCashFlow(false)
+    setShowCashFlowEditor(false)
+    setCashFlowAmount('')
   }
 
   // Check auth + load saved trades on mount
@@ -186,12 +254,14 @@ export default function Home() {
   }, [])
 
   const loadAccountValues = async (userId: string) => {
-    const [{ data: fa }, { data: bals }] = await Promise.all([
+    const [{ data: fa }, { data: bals }, { data: flows }] = await Promise.all([
       supabase.from('financial_accounts').select('*').eq('user_id', userId),
       supabase.from('account_balances').select('account_id, as_of, balance').eq('user_id', userId),
+      supabase.from('account_cash_flows').select('account_id, date, amount, type').eq('user_id', userId),
     ])
     setFinancialAccounts((fa ?? []) as FinancialAccount[])
     setAccountBalances((bals ?? []) as AccountBalance[])
+    setCashFlows((flows ?? []) as CashFlow[])
   }
 
   const mapRow = (r: any): Trade => ({
@@ -723,13 +793,18 @@ export default function Home() {
                   <div style={{ fontSize: 30, fontWeight: 800, lineHeight: 1, color: 'var(--text)' }}>
                     {fmt(currentValue)}
                   </div>
-                  {valueDelta !== null && (
-                    <div style={{ fontSize: 13, fontWeight: 600, color: valueDelta >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                      {valueDelta >= 0 ? '▲' : '▼'} {fmt(Math.abs(valueDelta))} this period
+                  {tradingGain !== null && (
+                    <div style={{ fontSize: 13, fontWeight: 600, color: tradingGain >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      {tradingGain >= 0 ? '▲' : '▼'} {fmt(Math.abs(tradingGain))} trading gain this period
+                    </div>
+                  )}
+                  {netCashFlowInPeriod !== 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      {netCashFlowInPeriod >= 0 ? '+' : '-'}{fmt(Math.abs(netCashFlowInPeriod))} {netCashFlowInPeriod >= 0 ? 'deposited' : 'withdrawn'} this period
                     </div>
                   )}
                   <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
-                    Includes deposits/withdrawals — your real balance, not just closed-trade P&amp;L.
+                    Value above includes deposits/withdrawals; trading gain excludes them.
                   </div>
                 </>
               ) : (
@@ -738,32 +813,78 @@ export default function Home() {
                 </div>
               )}
               {!isAllView && (
-                showValueEditor ? (
-                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8 }}>
-                    <input
-                      type="number"
-                      placeholder="Current value"
-                      value={valueInput}
-                      onChange={e => setValueInput(e.target.value)}
-                      autoFocus
-                      style={{ width: 110, padding: '5px 8px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12 }}
-                    />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                  {showValueEditor ? (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <input
+                        type="number"
+                        placeholder="Current value"
+                        value={valueInput}
+                        onChange={e => setValueInput(e.target.value)}
+                        autoFocus
+                        style={{ width: 110, padding: '5px 8px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12 }}
+                      />
+                      <button
+                        onClick={saveAccountValue}
+                        disabled={updatingValue}
+                        style={{ padding: '5px 10px', background: 'var(--blue)', border: 'none', borderRadius: 6, color: '#fff', fontSize: 12, cursor: updatingValue ? 'not-allowed' : 'pointer' }}
+                      >{updatingValue ? 'Saving...' : 'Save'}</button>
+                      <button
+                        onClick={() => setShowValueEditor(false)}
+                        style={{ padding: '5px 8px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}
+                      >✕</button>
+                    </div>
+                  ) : (
                     <button
-                      onClick={saveAccountValue}
-                      disabled={updatingValue}
-                      style={{ padding: '5px 10px', background: 'var(--blue)', border: 'none', borderRadius: 6, color: '#fff', fontSize: 12, cursor: updatingValue ? 'not-allowed' : 'pointer' }}
-                    >{updatingValue ? 'Saving...' : 'Save'}</button>
+                      onClick={() => { setValueInput(currentValue !== null ? String(currentValue) : ''); setShowValueEditor(true) }}
+                      style={{ background: 'none', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontSize: 12, padding: 0, textAlign: 'left' }}
+                    >+ Update value</button>
+                  )}
+                  {showCashFlowEditor ? (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', gap: 3, background: 'var(--surface2)', padding: 3, borderRadius: 6, border: '1px solid var(--border)' }}>
+                        {(['deposit', 'withdrawal'] as const).map(t => (
+                          <button
+                            key={t}
+                            onClick={() => setCashFlowType(t)}
+                            style={{
+                              padding: '4px 8px', borderRadius: 5, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 500, textTransform: 'capitalize',
+                              background: cashFlowType === t ? 'var(--blue)' : 'transparent',
+                              color: cashFlowType === t ? '#fff' : 'var(--text-muted)',
+                            }}
+                          >{t}</button>
+                        ))}
+                      </div>
+                      <input
+                        type="date"
+                        value={cashFlowDate}
+                        onChange={e => setCashFlowDate(e.target.value)}
+                        style={{ padding: '5px 6px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 11, width: 120 }}
+                      />
+                      <input
+                        type="number"
+                        placeholder="Amount"
+                        value={cashFlowAmount}
+                        onChange={e => setCashFlowAmount(e.target.value)}
+                        style={{ width: 90, padding: '5px 8px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12 }}
+                      />
+                      <button
+                        onClick={saveCashFlow}
+                        disabled={savingCashFlow}
+                        style={{ padding: '5px 10px', background: 'var(--blue)', border: 'none', borderRadius: 6, color: '#fff', fontSize: 12, cursor: savingCashFlow ? 'not-allowed' : 'pointer' }}
+                      >{savingCashFlow ? 'Saving...' : 'Log'}</button>
+                      <button
+                        onClick={() => setShowCashFlowEditor(false)}
+                        style={{ padding: '5px 8px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}
+                      >✕</button>
+                    </div>
+                  ) : (
                     <button
-                      onClick={() => setShowValueEditor(false)}
-                      style={{ padding: '5px 8px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}
-                    >✕</button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => { setValueInput(currentValue !== null ? String(currentValue) : ''); setShowValueEditor(true) }}
-                    style={{ background: 'none', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontSize: 12, padding: 0, textAlign: 'left', marginTop: 8 }}
-                  >+ Update value</button>
-                )
+                      onClick={() => { setCashFlowDate(todayStr()); setShowCashFlowEditor(true) }}
+                      style={{ background: 'none', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontSize: 12, padding: 0, textAlign: 'left' }}
+                    >+ Log deposit / withdrawal</button>
+                  )}
+                </div>
               )}
             </div>
             <div style={{ flex: 1, padding: '16px 20px 12px 20px' }}>
