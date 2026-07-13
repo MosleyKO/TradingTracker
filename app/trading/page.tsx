@@ -8,8 +8,10 @@ import { calcStats, Trade } from '@/lib/stats'
 import { createClient } from '@/lib/supabase'
 import EquityChart from '@/components/EquityChart'
 import MonthlyCalendar from '@/components/MonthlyCalendar'
+import NetWorthChart from '@/components/NetWorthChart'
 import SectionNav from '@/components/SectionNav'
-import { Preset, PRESETS, getPresetRange } from '@/lib/dateRange'
+import { Preset, PRESETS, getPresetRange, todayStr } from '@/lib/dateRange'
+import { FinancialAccount, AccountBalance } from '@/lib/networth'
 
 type Broker = 'tos' | 'webull'
 
@@ -45,6 +47,19 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const router = useRouter()
   const supabase = createClient()
+
+  // Account Value — broker-reported total value over time, tracked via the
+  // same financial_accounts/account_balances tables Net Worth uses (a
+  // trading account and its Net Worth line item are matched by name).
+  // This is deliberately separate from Net P&L above: it includes any
+  // unrealized gains/losses AND any deposits/withdrawals, so it answers
+  // "how much do I actually have" rather than "how much have my closed
+  // trades made."
+  const [financialAccounts, setFinancialAccounts] = useState<FinancialAccount[]>([])
+  const [accountBalances, setAccountBalances] = useState<AccountBalance[]>([])
+  const [valueInput, setValueInput] = useState('')
+  const [updatingValue, setUpdatingValue] = useState(false)
+  const [showValueEditor, setShowValueEditor] = useState(false)
 
   const ALL_ID = '__all__'
   const isAllView = activeId === ALL_ID
@@ -90,16 +105,94 @@ export default function Home() {
   }, [rawTrades])
   const hasData = rawTrades.length > 0
 
+  // Match trading accounts to their Net Worth line item by name (Webull ↔
+  // financial_accounts row named "Webull", etc.) — simple name-based link,
+  // no schema change; fine for a small, personal set of accounts.
+  const linkedFinancialAccounts = useMemo(() => {
+    const tradingNames = new Set(accounts.map(a => a.name))
+    return financialAccounts.filter(fa => tradingNames.has(fa.name))
+  }, [financialAccounts, accounts])
+
+  const activeLinkedAccountId = useMemo(
+    () => (isAllView ? null : linkedFinancialAccounts.find(fa => fa.name === activeAccount?.name)?.id ?? null),
+    [isAllView, linkedFinancialAccounts, activeAccount]
+  )
+
+  const valueCurve = useMemo(() => {
+    const ids = isAllView ? new Set(linkedFinancialAccounts.map(fa => fa.id)) : new Set(activeLinkedAccountId ? [activeLinkedAccountId] : [])
+    const map = new Map<string, number>()
+    for (const b of accountBalances) {
+      if (!ids.has(b.account_id)) continue
+      map.set(b.as_of, (map.get(b.as_of) ?? 0) + b.balance)
+    }
+    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([date, net]) => ({ date, net }))
+  }, [accountBalances, isAllView, linkedFinancialAccounts, activeLinkedAccountId])
+
+  const hasValueData = valueCurve.length > 0
+  const currentValue = hasValueData ? valueCurve[valueCurve.length - 1].net : null
+
+  // Same period the trade stats above use, applied to the value curve — the
+  // string comparison (not Date objects) avoids excluding a snapshot taken
+  // ON the period's first day (see Overview's identical fix).
+  const valueDelta = useMemo(() => {
+    if (!hasValueData || currentValue === null) return null
+    let start: Date
+    if (preset === 'custom') start = customStart ? new Date(customStart + 'T00:00:00') : new Date(0)
+    else ({ start } = getPresetRange(preset))
+    const startStr = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`
+    const priorPoint = [...valueCurve].reverse().find(d => d.date <= startStr)
+    const comparison = priorPoint ?? valueCurve[0]
+    return comparison ? currentValue - comparison.net : null
+  }, [valueCurve, hasValueData, currentValue, preset, customStart])
+
+  const saveAccountValue = async () => {
+    const val = parseFloat(valueInput)
+    if (isNaN(val) || val < 0 || !activeAccount) return
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    setUpdatingValue(true)
+
+    let financialAccountId = activeLinkedAccountId
+    if (!financialAccountId) {
+      const { data, error } = await supabase.from('financial_accounts').insert({
+        user_id: user.id, name: activeAccount.name, kind: 'asset', category: 'Investment',
+        display_order: financialAccounts.length, is_active: true,
+      }).select().single()
+      if (error) { alert(`Failed to set up value tracking: ${error.message}`); setUpdatingValue(false); return }
+      financialAccountId = data.id
+      setFinancialAccounts(prev => [...prev, data as FinancialAccount])
+    }
+
+    const { error: balError } = await supabase
+      .from('account_balances')
+      .upsert({ user_id: user.id, account_id: financialAccountId, as_of: todayStr(), balance: val }, { onConflict: 'account_id,as_of' })
+    if (balError) { alert(`Failed to save value: ${balError.message}`); setUpdatingValue(false); return }
+
+    await loadAccountValues(user.id)
+    setUpdatingValue(false)
+    setShowValueEditor(false)
+    setValueInput('')
+  }
+
   // Check auth + load saved trades on mount
   useEffect(() => {
     const init = async () => {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push('/auth'); return }
-      await Promise.all([ensureAccounts(user.id), loadTrades(user.id)])
+      await Promise.all([ensureAccounts(user.id), loadTrades(user.id), loadAccountValues(user.id)])
       setLoadingData(false)
     }
     init()
   }, [])
+
+  const loadAccountValues = async (userId: string) => {
+    const [{ data: fa }, { data: bals }] = await Promise.all([
+      supabase.from('financial_accounts').select('*').eq('user_id', userId),
+      supabase.from('account_balances').select('account_id, as_of, balance').eq('user_id', userId),
+    ])
+    setFinancialAccounts((fa ?? []) as FinancialAccount[])
+    setAccountBalances((bals ?? []) as AccountBalance[])
+  }
 
   const mapRow = (r: any): Trade => ({
     symbol: r.symbol,
@@ -126,9 +219,12 @@ export default function Home() {
     if (accts.length === 0) {
       // Carry over starting balances from the old user_settings table if present
       const { data: settings } = await supabase.from('user_settings').select('*').eq('user_id', userId).maybeSingle()
+      // accounts.id is a global (not per-user) primary key, so these can't be
+      // hardcoded strings — a second user hitting this path would collide
+      // with whichever user got 'tos'/'webull' first.
       const defaults = [
-        { id: 'tos', user_id: userId, name: 'ThinkorSwim', broker: 'tos', starting_balance: settings?.tos_starting_balance ?? null },
-        { id: 'webull', user_id: userId, name: 'Webull', broker: 'webull', starting_balance: settings?.webull_starting_balance ?? null },
+        { id: crypto.randomUUID(), user_id: userId, name: 'ThinkorSwim', broker: 'tos', starting_balance: settings?.tos_starting_balance ?? null },
+        { id: crypto.randomUUID(), user_id: userId, name: 'Webull', broker: 'webull', starting_balance: settings?.webull_starting_balance ?? null },
       ]
       const { error: insError } = await supabase.from('accounts').insert(defaults)
       if (insError) { alert(`Failed to create default accounts: ${insError.message}`); return }
@@ -609,6 +705,78 @@ export default function Home() {
                 Equity Curve
               </div>
               <EquityChart data={stats.equityCurve} />
+            </div>
+          </div>
+
+          {/* ════════════════════════════════════════════════
+              ROW 1.5 — Account Value (broker-reported total, tracked
+              separately from Net P&L above — includes unrealized gains
+              and any deposits/withdrawals)
+          ════════════════════════════════════════════════ */}
+          <div className="panel" style={{ marginBottom: 24, display: 'flex', alignItems: 'stretch', gap: 0, padding: 0, overflow: 'hidden' }}>
+            <div style={{ width: 230, flexShrink: 0, padding: 24, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>
+                Account Value
+              </div>
+              {hasValueData && currentValue !== null ? (
+                <>
+                  <div style={{ fontSize: 30, fontWeight: 800, lineHeight: 1, color: 'var(--text)' }}>
+                    {fmt(currentValue)}
+                  </div>
+                  {valueDelta !== null && (
+                    <div style={{ fontSize: 13, fontWeight: 600, color: valueDelta >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      {valueDelta >= 0 ? '▲' : '▼'} {fmt(Math.abs(valueDelta))} this period
+                    </div>
+                  )}
+                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+                    Includes deposits/withdrawals — your real balance, not just closed-trade P&amp;L.
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>
+                  {isAllView ? 'No account values logged yet' : `No values logged for ${activeAccount?.name ?? 'this account'} yet`}
+                </div>
+              )}
+              {!isAllView && (
+                showValueEditor ? (
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8 }}>
+                    <input
+                      type="number"
+                      placeholder="Current value"
+                      value={valueInput}
+                      onChange={e => setValueInput(e.target.value)}
+                      autoFocus
+                      style={{ width: 110, padding: '5px 8px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12 }}
+                    />
+                    <button
+                      onClick={saveAccountValue}
+                      disabled={updatingValue}
+                      style={{ padding: '5px 10px', background: 'var(--blue)', border: 'none', borderRadius: 6, color: '#fff', fontSize: 12, cursor: updatingValue ? 'not-allowed' : 'pointer' }}
+                    >{updatingValue ? 'Saving...' : 'Save'}</button>
+                    <button
+                      onClick={() => setShowValueEditor(false)}
+                      style={{ padding: '5px 8px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}
+                    >✕</button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => { setValueInput(currentValue !== null ? String(currentValue) : ''); setShowValueEditor(true) }}
+                    style={{ background: 'none', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontSize: 12, padding: 0, textAlign: 'left', marginTop: 8 }}
+                  >+ Update value</button>
+                )
+              )}
+            </div>
+            <div style={{ flex: 1, padding: '16px 20px 12px 20px' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500, marginBottom: 8 }}>
+                Value Over Time
+              </div>
+              {hasValueData ? (
+                <NetWorthChart data={valueCurve} label="Account Value" />
+              ) : (
+                <div style={{ height: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                  Log a value to start tracking →
+                </div>
+              )}
             </div>
           </div>
 

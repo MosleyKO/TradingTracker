@@ -4,6 +4,7 @@ import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'rec
 
 interface Props {
   data: { date: string; net: number }[]
+  label?: string
 }
 
 const fmt = (n: number) =>
@@ -11,7 +12,7 @@ const fmt = (n: number) =>
     ? `$${Math.round(n).toLocaleString()}`
     : `-$${Math.abs(Math.round(n)).toLocaleString()}`
 
-export default function NetWorthChart({ data }: Props) {
+export default function NetWorthChart({ data, label = 'Net Worth' }: Props) {
   const positive = data.length === 0 || data[data.length - 1].net >= 0
   const color = positive ? '#5b8cf5' : '#e05c5c'
   const chartData = data.map(d => ({ date: d.date.slice(5), net: d.net }))
@@ -37,7 +38,7 @@ export default function NetWorthChart({ data }: Props) {
         <Tooltip
           contentStyle={{ background: '#1a1d27', border: '1px solid #2a2e42', borderRadius: 6, fontSize: 12 }}
           labelStyle={{ color: '#7b80a0' }}
-          formatter={(v: number) => [fmt(v), 'Net Worth']}
+          formatter={(v: number) => [fmt(v), label]}
         />
         <Area
           type="monotone"
