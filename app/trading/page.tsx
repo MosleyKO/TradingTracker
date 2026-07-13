@@ -3,7 +3,7 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { parseTOS } from '@/lib/parseTOS'
-import { parseWebull } from '@/lib/parseWebull'
+import { parseWebull, OpenPosition } from '@/lib/parseWebull'
 import { calcStats, Trade } from '@/lib/stats'
 import { createClient } from '@/lib/supabase'
 import MonthlyCalendar from '@/components/MonthlyCalendar'
@@ -32,6 +32,7 @@ export default function Home() {
   const [accounts, setAccounts] = useState<TradingAccount[]>([])
   const [activeId, setActiveId] = useState<string>('')
   const [tradesByAccount, setTradesByAccount] = useState<Record<string, Trade[]>>({})
+  const [openPositionsByAccount, setOpenPositionsByAccount] = useState<Record<string, OpenPosition[]>>({})
   const [addingAccount, setAddingAccount] = useState(false)
   const [newAccountName, setNewAccountName] = useState('')
   const [newAccountBroker, setNewAccountBroker] = useState<Broker>('tos')
@@ -176,6 +177,15 @@ export default function Home() {
   // balance go up."
   const tradingGain = valueDelta !== null ? valueDelta - netCashFlowInPeriod : null
 
+  // Positions still held (from the Webull parser's leftover unmatched
+  // buys) — cost basis only for now, no live price yet, so this shows
+  // WHAT you're holding, not whether it's up or down.
+  const activeOpenPositions = useMemo(
+    () => (isAllView ? [] : openPositionsByAccount[activeId] ?? []),
+    [isAllView, openPositionsByAccount, activeId]
+  )
+  const openPositionsCostBasis = activeOpenPositions.reduce((s, p) => s + p.costBasis, 0)
+
   // Shared by saveAccountValue and saveCashFlow — both need a
   // financial_accounts row to write against, created on first use.
   const ensureLinkedFinancialAccount = async (userId: string): Promise<string | null> => {
@@ -237,7 +247,7 @@ export default function Home() {
     const init = async () => {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push('/auth'); return }
-      await Promise.all([ensureAccounts(user.id), loadTrades(user.id), loadAccountValues(user.id)])
+      await Promise.all([ensureAccounts(user.id), loadTrades(user.id), loadAccountValues(user.id), loadOpenPositions(user.id)])
       setLoadingData(false)
     }
     init()
@@ -333,6 +343,49 @@ export default function Home() {
     setTradesByAccount(grouped)
   }
 
+  const loadOpenPositions = async (userId: string) => {
+    const { data, error } = await supabase
+      .from('open_positions')
+      .select('*')
+      .eq('user_id', userId)
+      .order('cost_basis', { ascending: false })
+
+    if (error || !data) return
+    const grouped: Record<string, OpenPosition[]> = {}
+    for (const r of data as any[]) {
+      ;(grouped[r.account_type] ??= []).push({
+        symbol: r.symbol,
+        name: r.symbol,
+        qty: r.qty,
+        avgEntryPrice: r.avg_entry_price,
+        costBasis: r.cost_basis,
+        entryDate: new Date(r.entry_date),
+      })
+    }
+    setOpenPositionsByAccount(grouped)
+  }
+
+  const saveOpenPositions = async (positions: OpenPosition[], accountId: string) => {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    const rows = positions.map(p => ({
+      user_id: user.id,
+      account_type: accountId,
+      symbol: p.symbol,
+      qty: p.qty,
+      avg_entry_price: p.avgEntryPrice,
+      cost_basis: p.costBasis,
+      entry_date: p.entryDate.toISOString(),
+    }))
+    // Open positions are a fresh snapshot from the CSV just uploaded, not an
+    // additive log like trades — replace wholesale rather than merge.
+    const { error: delError } = await supabase.from('open_positions').delete().eq('user_id', user.id).eq('account_type', accountId)
+    if (delError) { alert(`Failed to update open positions (delete): ${delError.message}`); return }
+    if (rows.length === 0) return
+    const { error: insError } = await supabase.from('open_positions').insert(rows)
+    if (insError) alert(`Failed to update open positions (insert): ${insError.message}`)
+  }
+
   const saveTrades = async (trades: Trade[], accountId: string) => {
     setSaving(true)
     const { data: { user } } = await supabase.auth.getUser()
@@ -379,7 +432,7 @@ export default function Home() {
           trims: t.trims.map(tr => ({ qty: tr.qty, price: tr.closePrice, pnl: tr.pnl, time: tr.time })),
         }))
       } else {
-        const completed = parseWebull(text)
+        const { completed, open } = parseWebull(text)
         trades = completed.map(t => ({
           symbol: t.symbol,
           pnl: t.totalPnl,
@@ -391,6 +444,8 @@ export default function Home() {
           totalQty: t.totalQty,
           trims: t.trims.map(tr => ({ qty: tr.qty, price: tr.sellPrice, pnl: tr.pnl, time: tr.time })),
         }))
+        setOpenPositionsByAccount(prev => ({ ...prev, [acct.id]: open }))
+        await saveOpenPositions(open, acct.id)
       }
 
       // Merge against what's actually in the DB (avoids stale local state)
@@ -798,6 +853,58 @@ export default function Home() {
               )}
             </div>
           </div>
+
+          {/* ════════════════════════════════════════════════
+              Open Positions — captured from the Webull parser's leftover
+              unmatched buys (previously discarded entirely). Cost basis
+              only for now; no live price yet, so this shows what you're
+              holding, not whether it's up or down.
+          ════════════════════════════════════════════════ */}
+          {!isAllView && activeAccount?.broker === 'webull' && (
+            <div className="panel" style={{ marginBottom: 24 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
+                <div className="panel-title" style={{ marginBottom: 0 }}>Open Positions</div>
+                {activeOpenPositions.length > 0 && (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    Total cost basis: <strong style={{ color: 'var(--text)' }}>{fmt(openPositionsCostBasis)}</strong>
+                  </div>
+                )}
+              </div>
+              {activeOpenPositions.length === 0 ? (
+                <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                  No open positions on file — either you're flat, or upload a fresh statement to refresh this.
+                </div>
+              ) : (
+                <>
+                  <table className="trade-table">
+                    <thead>
+                      <tr>
+                        <th>Symbol</th>
+                        <th>Qty</th>
+                        <th>Avg Entry</th>
+                        <th>Cost Basis</th>
+                        <th>Held Since</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activeOpenPositions.map(p => (
+                        <tr key={p.symbol}>
+                          <td style={{ fontWeight: 600 }}>{p.symbol}</td>
+                          <td style={{ color: 'var(--text-muted)' }}>{p.qty}</td>
+                          <td style={{ color: 'var(--text-muted)' }}>${p.avgEntryPrice.toFixed(2)}</td>
+                          <td>{fmt(p.costBasis)}</td>
+                          <td style={{ color: 'var(--text-muted)' }}>{p.entryDate.toLocaleDateString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)' }}>
+                    Cost basis only — no live prices yet, so this doesn't yet show unrealized gain/loss.
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {/* ════════════════════════════════════════════════
               ROW 2 — KPI Cards (6 metrics)

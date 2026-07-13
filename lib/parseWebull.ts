@@ -18,6 +18,18 @@ export interface CompletedStockTrade {
   bestTrimPnl: number
 }
 
+// A buy that hasn't been matched to a sell yet — still held. Aggregated
+// across multiple lots of the same symbol into one weighted-average entry,
+// the way a broker statement shows one line per position.
+export interface OpenPosition {
+  symbol: string
+  name: string
+  qty: number
+  avgEntryPrice: number
+  costBasis: number
+  entryDate: Date
+}
+
 interface RawFill {
   symbol: string
   name: string
@@ -27,9 +39,9 @@ interface RawFill {
   filledTime: Date
 }
 
-export function parseWebull(csvText: string): CompletedStockTrade[] {
+export function parseWebull(csvText: string): { completed: CompletedStockTrade[]; open: OpenPosition[] } {
   const lines = csvText.split('\n').filter(l => l.trim())
-  if (lines.length < 2) return []
+  if (lines.length < 2) return { completed: [], open: [] }
 
   const filled: RawFill[] = []
 
@@ -124,5 +136,19 @@ export function parseWebull(csvText: string): CompletedStockTrade[] {
 
   // Sort by last sell time
   result.sort((a, b) => a.lastSellTime.getTime() - b.lastSellTime.getTime())
-  return result
+
+  // Whatever's left in each symbol's queue was never matched to a sell —
+  // still held. Aggregated into one weighted-average line per symbol.
+  const open: OpenPosition[] = []
+  for (const [symbol, lots] of Array.from(openQueue.entries())) {
+    const remaining = lots.filter(l => l.qty > 0)
+    if (remaining.length === 0) continue
+    const qty = remaining.reduce((s, l) => s + l.qty, 0)
+    const costBasis = remaining.reduce((s, l) => s + l.qty * l.avgPrice, 0)
+    const entryDate = remaining.reduce((earliest, l) => (l.filledTime < earliest ? l.filledTime : earliest), remaining[0].filledTime)
+    open.push({ symbol, name: remaining[0].name, qty, avgEntryPrice: costBasis / qty, costBasis, entryDate })
+  }
+  open.sort((a, b) => b.costBasis - a.costBasis)
+
+  return { completed: result, open }
 }
