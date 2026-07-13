@@ -8,6 +8,7 @@ import { calcStats, Trade } from '@/lib/stats'
 import { createClient } from '@/lib/supabase'
 import EquityChart from '@/components/EquityChart'
 import MonthlyCalendar from '@/components/MonthlyCalendar'
+import SectionNav from '@/components/SectionNav'
 
 type Broker = 'tos' | 'webull'
 
@@ -44,7 +45,6 @@ export default function Home() {
   const [renameInput, setRenameInput] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
-  const [userEmail, setUserEmail] = useState<string | null>(null)
   const [loadingData, setLoadingData] = useState(true)
   const [saving, setSaving] = useState(false)
   const [preset, setPreset] = useState<Preset>('all')
@@ -109,7 +109,6 @@ export default function Home() {
     const init = async () => {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push('/auth'); return }
-      setUserEmail(user.email ?? null)
       await Promise.all([ensureAccounts(user.id), loadTrades(user.id)])
       setLoadingData(false)
     }
@@ -279,11 +278,6 @@ export default function Home() {
     reader.readAsText(file)
   }, [])
 
-  const handleSignOut = async () => {
-    await supabase.auth.signOut()
-    router.push('/auth')
-  }
-
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(false)
@@ -394,19 +388,22 @@ export default function Home() {
 
   if (loadingData) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-        Loading...
-      </div>
+      <>
+        <SectionNav />
+        <div style={{ minHeight: '60vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
+          Loading...
+        </div>
+      </>
     )
   }
 
   return (
+    <>
+    <SectionNav />
     <div className="container">
-      {/* ── Header ── */}
+      {/* ── Header: account tabs ── */}
       <div className="header">
-        <h1>Trade Journal</h1>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div className="tabs">
+        <div className="tabs">
             {accounts.length > 1 && (
               <button
                 className={`tab ${isAllView ? 'active' : ''}`}
@@ -468,12 +465,6 @@ export default function Home() {
                 style={{ fontWeight: 600 }}
               >+</button>
             )}
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{userEmail}</div>
-          <button onClick={handleSignOut} style={{
-            background: 'none', border: '1px solid var(--border)', borderRadius: 6,
-            color: 'var(--text-muted)', cursor: 'pointer', padding: '5px 12px', fontSize: 12
-          }}>Sign out</button>
         </div>
       </div>
 
@@ -915,5 +906,6 @@ export default function Home() {
         </>
       )}
     </div>
+    </>
   )
 }
