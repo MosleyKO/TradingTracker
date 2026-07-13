@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase'
 import SectionNav from '@/components/SectionNav'
-import { calcStats, Trade } from '@/lib/stats'
+import { Trade } from '@/lib/stats'
 import { Transaction, totals as cashFlowTotals } from '@/lib/cashflow'
 import { Preset, PRESETS, getPresetRange } from '@/lib/dateRange'
 import { FinancialAccount, AccountBalance, netWorthCurve } from '@/lib/networth'
@@ -15,8 +15,6 @@ const fmt = (n: number) =>
     ? `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
     : `-$${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
-const pct = (n: number) => `${(n * 100).toFixed(1)}%`
-
 interface ActivityItem {
   date: Date
   label: string
@@ -25,14 +23,25 @@ interface ActivityItem {
   color: string
 }
 
+interface CashFlowRow {
+  account_id: string
+  date: string
+  amount: number
+  type: 'deposit' | 'withdrawal'
+}
+
 export default function OverviewPage() {
   const router = useRouter()
   const supabase = createClient()
   const [loading, setLoading] = useState(true)
 
   const [netWorthCurveData, setNetWorthCurveData] = useState<{ date: string; net: number }[]>([])
+  const [financialAccounts, setFinancialAccounts] = useState<FinancialAccount[]>([])
+  const [accountBalances, setAccountBalances] = useState<AccountBalance[]>([])
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([])
   const [allTrades, setAllTrades] = useState<Trade[]>([])
+  const [tradingAccountNames, setTradingAccountNames] = useState<string[]>([])
+  const [cashFlows, setCashFlows] = useState<CashFlowRow[]>([])
 
   const [preset, setPreset] = useState<Preset>('month')
   const [customStart, setCustomStart] = useState('')
@@ -42,7 +51,7 @@ export default function OverviewPage() {
     const init = async () => {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push('/auth'); return }
-      await Promise.all([loadNetWorth(user.id), loadCashFlow(user.id), loadTrading(user.id)])
+      await Promise.all([loadNetWorth(user.id), loadCashFlow(user.id), loadTrading(user.id), loadTradingLinkage(user.id)])
       setLoading(false)
     }
     init()
@@ -53,7 +62,23 @@ export default function OverviewPage() {
       supabase.from('financial_accounts').select('*').eq('user_id', userId),
       supabase.from('account_balances').select('account_id, as_of, balance').eq('user_id', userId).order('as_of', { ascending: true }),
     ])
-    setNetWorthCurveData(netWorthCurve((accts ?? []) as FinancialAccount[], (bals ?? []) as AccountBalance[]))
+    const accountsData = (accts ?? []) as FinancialAccount[]
+    const balancesData = (bals ?? []) as AccountBalance[]
+    setFinancialAccounts(accountsData)
+    setAccountBalances(balancesData)
+    setNetWorthCurveData(netWorthCurve(accountsData, balancesData))
+  }
+
+  // Trading account names + cash flows, so the Trading card below can pull
+  // the SAME "balance, not closed-trade P&L" figure the Trading page shows
+  // — matched to a financial_accounts row by name, same pattern as there.
+  const loadTradingLinkage = async (userId: string) => {
+    const [{ data: tAccts }, { data: flows }] = await Promise.all([
+      supabase.from('accounts').select('name').eq('user_id', userId),
+      supabase.from('account_cash_flows').select('account_id, date, amount, type').eq('user_id', userId),
+    ])
+    setTradingAccountNames((tAccts ?? []).map((a: any) => a.name))
+    setCashFlows((flows ?? []) as CashFlowRow[])
   }
 
   const loadCashFlow = async (userId: string) => {
@@ -99,7 +124,6 @@ export default function OverviewPage() {
 
   const hasNetWorthData = netWorthCurveData.length > 0
   const hasCashFlowData = allTransactions.length > 0
-  const hasTradingData = allTrades.length > 0
 
   const netWorth = useMemo(() => {
     if (!hasNetWorthData) return null
@@ -131,7 +155,47 @@ export default function OverviewPage() {
     () => allTrades.filter(t => t.closeTime >= range.start && t.closeTime <= range.end),
     [allTrades, range]
   )
-  const tradingStats = useMemo(() => calcStats(filteredTrades), [filteredTrades])
+
+  // Trading card shows account BALANCE, not closed-trade P&L — same
+  // financial_accounts/account_balances model the Trading page's Account
+  // Value panel uses, matched to a trading account by name.
+  const linkedTradingIds = useMemo(() => {
+    const names = new Set(tradingAccountNames)
+    return financialAccounts.filter(fa => names.has(fa.name)).map(fa => fa.id)
+  }, [financialAccounts, tradingAccountNames])
+
+  const tradingValueCurve = useMemo(() => {
+    const ids = new Set(linkedTradingIds)
+    const map = new Map<string, number>()
+    for (const b of accountBalances) {
+      if (!ids.has(b.account_id)) continue
+      map.set(b.as_of, (map.get(b.as_of) ?? 0) + b.balance)
+    }
+    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([date, net]) => ({ date, net }))
+  }, [accountBalances, linkedTradingIds])
+
+  const hasTradingValueData = tradingValueCurve.length > 0
+  const currentTradingValue = hasTradingValueData ? tradingValueCurve[tradingValueCurve.length - 1].net : null
+
+  const tradingValueDelta = useMemo(() => {
+    if (!hasTradingValueData || currentTradingValue === null) return null
+    const rangeStartStr = `${range.start.getFullYear()}-${String(range.start.getMonth() + 1).padStart(2, '0')}-${String(range.start.getDate()).padStart(2, '0')}`
+    const priorPoint = [...tradingValueCurve].reverse().find(d => d.date <= rangeStartStr)
+    const comparison = priorPoint ?? tradingValueCurve[0]
+    return comparison ? currentTradingValue - comparison.net : null
+  }, [tradingValueCurve, hasTradingValueData, currentTradingValue, range])
+
+  // Deposits/withdrawals during the period get subtracted back out, same
+  // as the Trading page — a deposit shouldn't read as a trading gain here.
+  const tradingNetCashFlow = useMemo(() => {
+    const ids = new Set(linkedTradingIds)
+    return cashFlows
+      .filter(cf => ids.has(cf.account_id))
+      .filter(cf => { const d = new Date(cf.date + 'T12:00:00'); return d >= range.start && d <= range.end })
+      .reduce((s, cf) => s + (cf.type === 'deposit' ? cf.amount : -cf.amount), 0)
+  }, [cashFlows, linkedTradingIds, range])
+
+  const tradingGain = tradingValueDelta !== null ? tradingValueDelta - tradingNetCashFlow : null
 
   const activity = useMemo(() => {
     const nwActivity: ActivityItem[] = netWorthCurveData
@@ -264,25 +328,24 @@ export default function OverviewPage() {
             </div>
           </Link>
 
-          {/* Trading card */}
+          {/* Trading card — account balance, not closed-trade P&L */}
           <Link href="/trading" style={{ textDecoration: 'none' }}>
             <div className="panel" style={{ cursor: 'pointer', transition: 'border-color 0.15s' }}>
-              <div className="panel-title">Trading ({periodLabel})</div>
-              {hasTradingData ? (
+              <div className="panel-title">Trading</div>
+              {hasTradingValueData && currentTradingValue !== null ? (
                 <>
-                  <div style={{ fontSize: 28, fontWeight: 800, color: tradingStats.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                    {fmt(tradingStats.netPnl)}
+                  <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--text)' }}>
+                    {fmt(currentTradingValue)}
                   </div>
-                  <div style={{ display: 'flex', gap: 12, marginTop: 6, fontSize: 12 }}>
-                    <span style={{ color: 'var(--text-muted)' }}>{tradingStats.tradeCount} trades</span>
-                    {tradingStats.tradeCount > 0 && (
-                      <span style={{ color: tradingStats.winRate >= 0.5 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>{pct(tradingStats.winRate)} win rate</span>
-                    )}
-                  </div>
+                  {tradingGain !== null && (
+                    <div style={{ fontSize: 12, fontWeight: 600, color: tradingGain >= 0 ? 'var(--green)' : 'var(--red)', marginTop: 6 }}>
+                      {tradingGain >= 0 ? '▲' : '▼'} {fmt(Math.abs(tradingGain))} trading gain ({periodLabel})
+                    </div>
+                  )}
                 </>
               ) : (
                 <>
-                  <div style={{ fontSize: 15, color: 'var(--text-muted)', marginTop: 4 }}>No trades yet</div>
+                  <div style={{ fontSize: 15, color: 'var(--text-muted)', marginTop: 4 }}>No account value logged yet</div>
                   <div style={{ fontSize: 12, color: 'var(--blue)', marginTop: 6 }}>Set up Trading →</div>
                 </>
               )}

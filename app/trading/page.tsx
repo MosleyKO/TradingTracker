@@ -6,7 +6,6 @@ import { parseTOS } from '@/lib/parseTOS'
 import { parseWebull } from '@/lib/parseWebull'
 import { calcStats, Trade } from '@/lib/stats'
 import { createClient } from '@/lib/supabase'
-import EquityChart from '@/components/EquityChart'
 import MonthlyCalendar from '@/components/MonthlyCalendar'
 import NetWorthChart from '@/components/NetWorthChart'
 import SectionNav from '@/components/SectionNav'
@@ -49,8 +48,6 @@ export default function Home() {
   type SortDir = 'asc' | 'desc'
   const [sortKey, setSortKey] = useState<SortKey>('date')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
-  const [balanceInput, setBalanceInput] = useState('')
-  const [editingBalance, setEditingBalance] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const router = useRouter()
   const supabase = createClient()
@@ -88,13 +85,6 @@ export default function Home() {
       .flatMap(([acctId, trades]) => trades.map(t => ({ ...t, account: nameById.get(acctId) ?? acctId })))
       .sort((a, b) => a.closeTime.getTime() - b.closeTime.getTime())
   }, [tradesByAccount, activeId, isAllView, accounts])
-  const startingBalance = isAllView
-    ? (() => {
-        const set = accounts.filter(a => a.starting_balance != null)
-        return set.length ? set.reduce((s, a) => s + (a.starting_balance ?? 0), 0) : null
-      })()
-    : activeAccount?.starting_balance ?? null
-
   // Filtered trades based on date range
   const filteredTrades = useMemo(() => {
     if (rawTrades.length === 0) return []
@@ -302,13 +292,6 @@ export default function Home() {
     }
     setAccounts(accts)
     setActiveId(prev => prev || accts[0].id)
-  }
-
-  const saveStartingBalance = async (value: number) => {
-    if (!activeAccount) return
-    const { error } = await supabase.from('accounts').update({ starting_balance: value }).eq('id', activeAccount.id)
-    if (error) { alert(`Failed to save balance: ${error.message}`); return }
-    setAccounts(prev => prev.map(a => a.id === activeAccount.id ? { ...a, starting_balance: value } : a))
   }
 
   const addAccount = async () => {
@@ -693,95 +676,10 @@ export default function Home() {
       ) : (
         <>
           {/* ════════════════════════════════════════════════
-              ROW 1 — Hero: Net P&L + Equity Curve
-          ════════════════════════════════════════════════ */}
-          <div className="panel" style={{ marginBottom: 24, display: 'flex', alignItems: 'stretch', gap: 0, padding: 0, overflow: 'hidden' }}>
-            {/* Left: P&L summary */}
-            <div style={{ width: 230, flexShrink: 0, padding: 24, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>
-                Net P&amp;L
-              </div>
-              <div style={{ fontSize: 36, fontWeight: 800, lineHeight: 1, color: stats.netPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                {fmt(stats.netPnl)}
-              </div>
-              {/* Account Growth % */}
-              {startingBalance && startingBalance > 0 ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {(() => {
-                    const growth = (stats.netPnl / startingBalance) * 100
-                    return (
-                      <span style={{ fontSize: 13, fontWeight: 600, color: growth >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                        {growth >= 0 ? '+' : ''}{growth.toFixed(2)}% account growth
-                      </span>
-                    )
-                  })()}
-                  {!isAllView && (
-                    <button
-                      onClick={() => { setBalanceInput(String(startingBalance)); setEditingBalance(true) }}
-                      style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1 }}
-                      title="Edit starting balance"
-                    >✎</button>
-                  )}
-                </div>
-              ) : (
-                !editingBalance && !isAllView ? (
-                  <button
-                    onClick={() => { setBalanceInput(''); setEditingBalance(true) }}
-                    style={{ background: 'none', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontSize: 12, padding: 0, textAlign: 'left', marginTop: 2 }}
-                  >+ Set starting balance</button>
-                ) : null
-              )}
-              {editingBalance && (
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2 }}>
-                  <input
-                    type="number"
-                    placeholder="e.g. 10000"
-                    value={balanceInput}
-                    onChange={e => setBalanceInput(e.target.value)}
-                    autoFocus
-                    style={{ width: 100, padding: '4px 8px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12 }}
-                  />
-                  <button
-                    onClick={async () => {
-                      const val = parseFloat(balanceInput)
-                      if (!isNaN(val) && val > 0) { await saveStartingBalance(val) }
-                      setEditingBalance(false)
-                    }}
-                    style={{ padding: '4px 10px', background: 'var(--blue)', border: 'none', borderRadius: 6, color: '#fff', fontSize: 12, cursor: 'pointer' }}
-                  >Save</button>
-                  <button
-                    onClick={() => setEditingBalance(false)}
-                    style={{ padding: '4px 8px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}
-                  >✕</button>
-                </div>
-              )}
-              {periodPnl !== null && (
-                <div style={{ fontSize: 12, color: periodPnl >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 500 }}>
-                  {periodPnl >= 0 ? '▲' : '▼'} {Math.abs(periodPnl).toFixed(1)}% vs prev period
-                </div>
-              )}
-              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>
-                {stats.tradeCount} trades
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                <span style={{ color: 'var(--green)' }}>{Math.round(stats.winRate * stats.tradeCount)}W</span>
-                {' / '}
-                <span style={{ color: 'var(--red)' }}>{stats.tradeCount - Math.round(stats.winRate * stats.tradeCount)}L</span>
-              </div>
-            </div>
-            {/* Right: Equity curve */}
-            <div style={{ flex: 1, padding: '16px 20px 12px 20px' }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500, marginBottom: 8 }}>
-                Equity Curve
-              </div>
-              <EquityChart data={stats.equityCurve} />
-            </div>
-          </div>
-
-          {/* ════════════════════════════════════════════════
-              ROW 1.5 — Account Value (broker-reported total, tracked
-              separately from Net P&L above — includes unrealized gains
-              and any deposits/withdrawals)
+              ROW 1 — Hero: Account Value (broker-reported total — this
+              is the number that actually answers "how much do I have and
+              how much have I made," not closed-trade P&L, which is now a
+              compact stat card below alongside Trade Win %, etc.)
           ════════════════════════════════════════════════ */}
           <div className="panel" style={{ marginBottom: 24, display: 'flex', alignItems: 'stretch', gap: 0, padding: 0, overflow: 'hidden' }}>
             <div style={{ width: 230, flexShrink: 0, padding: 24, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6 }}>
@@ -902,9 +800,18 @@ export default function Home() {
           </div>
 
           {/* ════════════════════════════════════════════════
-              ROW 2 — KPI Cards (5 metrics)
+              ROW 2 — KPI Cards (6 metrics)
           ════════════════════════════════════════════════ */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16, marginBottom: 24 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 16, marginBottom: 24 }}>
+            {/* Net P&L — closed-trade realized P&L (Account Value above is the real balance) */}
+            <div className="stat-card">
+              <div className="stat-label">Net P&amp;L</div>
+              <div className={`stat-value ${stats.netPnl >= 0 ? 'green' : 'red'}`}>{fmt(stats.netPnl)}</div>
+              <div className="stat-sub">
+                {stats.tradeCount} trades
+                {periodPnl !== null && <> · {periodPnl >= 0 ? '▲' : '▼'} {Math.abs(periodPnl).toFixed(1)}%</>}
+              </div>
+            </div>
             {/* Trade Win % */}
             <div className="stat-card">
               <div className="stat-label">Trade Win %</div>
