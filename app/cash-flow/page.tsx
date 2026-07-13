@@ -7,7 +7,7 @@ import SectionNav from '@/components/SectionNav'
 import CashFlowChart from '@/components/CashFlowChart'
 import { Field, inputStyle } from '@/components/FormField'
 import { Preset, PRESETS, getPresetRange, todayStr } from '@/lib/dateRange'
-import { parseBankStatement, bankTxKey, ParsedBankTransaction } from '@/lib/parseBankStatement'
+import { parseBankStatement, bankTxKey, toCategoryRule, deriveRulePattern, ParsedBankTransaction, CategoryRule } from '@/lib/parseBankStatement'
 import {
   Transaction,
   TxType,
@@ -21,6 +21,8 @@ import {
 interface ReviewRow extends ParsedBankTransaction {
   include: boolean
   isDuplicate: boolean
+  remember: boolean
+  pattern: string
 }
 
 const fmt = (n: number) =>
@@ -52,17 +54,26 @@ export default function CashFlowPage() {
 
   const [uploadRows, setUploadRows] = useState<ReviewRow[] | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [customRules, setCustomRules] = useState<CategoryRule[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     const init = async () => {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push('/auth'); return }
-      await loadTransactions(user.id)
+      await Promise.all([loadTransactions(user.id), loadCategoryRules(user.id)])
       setLoadingData(false)
     }
     init()
   }, [])
+
+  const loadCategoryRules = async (userId: string) => {
+    const { data } = await supabase
+      .from('category_rules')
+      .select('pattern, type, category, recurring')
+      .eq('user_id', userId)
+    setCustomRules((data ?? []).map(toCategoryRule))
+  }
 
   const loadTransactions = async (userId: string) => {
     const { data } = await supabase
@@ -141,11 +152,11 @@ export default function CashFlowPage() {
     const reader = new FileReader()
     reader.onload = (ev) => {
       const text = ev.target?.result as string
-      const parsed = parseBankStatement(text)
+      const parsed = parseBankStatement(text, customRules)
       const existingKeys = new Set(transactions.map(t => bankTxKey({ date: t.date, amount: t.amount, type: t.type })))
       const rows: ReviewRow[] = parsed.map(p => {
         const isDuplicate = existingKeys.has(bankTxKey(p))
-        return { ...p, isDuplicate, include: !p.excluded && !isDuplicate }
+        return { ...p, isDuplicate, include: !p.excluded && !isDuplicate, remember: false, pattern: deriveRulePattern(p.description) }
       })
       setUploadRows(rows)
     }
@@ -174,6 +185,21 @@ export default function CashFlowPage() {
     }))
     const { error } = await supabase.from('transactions').insert(rows)
     if (error) { alert(`Failed to import: ${error.message}`); setUploading(false); return }
+
+    const toRemember = toInsert.filter(r => r.remember && r.pattern.trim())
+    if (toRemember.length > 0) {
+      const ruleRows = toRemember.map(r => ({
+        user_id: user.id,
+        pattern: r.pattern.trim(),
+        type: r.type,
+        category: r.category,
+        recurring: r.recurring,
+      }))
+      const { error: ruleError } = await supabase.from('category_rules').insert(ruleRows)
+      if (ruleError) alert(`Imported, but failed to save some rules: ${ruleError.message}`)
+      await loadCategoryRules(user.id)
+    }
+
     await loadTransactions(user.id)
     setUploading(false)
     setUploadRows(null)
@@ -453,7 +479,7 @@ export default function CashFlowPage() {
           <div
             onClick={e => e.stopPropagation()}
             className="panel"
-            style={{ width: 820, maxWidth: '95vw', maxHeight: '88vh', display: 'flex', flexDirection: 'column', padding: 0 }}
+            style={{ width: 920, maxWidth: '96vw', maxHeight: '88vh', display: 'flex', flexDirection: 'column', padding: 0 }}
           >
             <div style={{ padding: '18px 20px', borderBottom: '1px solid var(--border)' }}>
               <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Review Import</div>
@@ -474,7 +500,7 @@ export default function CashFlowPage() {
                   <input
                     value={r.description}
                     onChange={e => updateUploadRow(idx, { description: e.target.value })}
-                    style={{ ...inputStyle(180), padding: '5px 8px', fontSize: 12, flexShrink: 1 }}
+                    style={{ ...inputStyle(150), padding: '5px 8px', fontSize: 12, flexShrink: 1, minWidth: 90 }}
                   />
                   <select
                     value={r.type}
@@ -513,6 +539,21 @@ export default function CashFlowPage() {
                       <span style={{ fontSize: 9, color: 'var(--blue)', background: 'rgba(91,140,245,0.12)', padding: '2px 5px', borderRadius: 4 }}>review</span>
                     )}
                   </div>
+                  {!r.isDuplicate && !r.excluded && (
+                    <label title="Always categorize similar transactions this way" style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--text-muted)', flexShrink: 0 }}>
+                      <input type="checkbox" checked={r.remember} onChange={e => updateUploadRow(idx, { remember: e.target.checked })} />
+                      🔒
+                    </label>
+                  )}
+                  {r.remember && (
+                    <input
+                      value={r.pattern}
+                      onChange={e => updateUploadRow(idx, { pattern: e.target.value })}
+                      placeholder="match keyword"
+                      title="Future transactions containing this text will auto-categorize the same way"
+                      style={{ ...inputStyle(110), padding: '4px 6px', fontSize: 10, flexShrink: 0 }}
+                    />
+                  )}
                 </div>
               ))}
             </div>
