@@ -6,7 +6,8 @@ import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase'
 
 const SECTIONS = [
-  { href: '/', label: 'Trading' },
+  { href: '/', label: 'Overview' },
+  { href: '/trading', label: 'Trading' },
   { href: '/net-worth', label: 'Net Worth' },
   { href: '/cash-flow', label: 'Cash Flow' },
 ]
