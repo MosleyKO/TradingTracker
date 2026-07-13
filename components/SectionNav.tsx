@@ -8,7 +8,7 @@ import { createClient } from '@/lib/supabase'
 const SECTIONS = [
   { href: '/', label: 'Trading' },
   { href: '/net-worth', label: 'Net Worth' },
-  // { href: '/cash-flow', label: 'Cash Flow' },  // slice 2
+  { href: '/cash-flow', label: 'Cash Flow' },
 ]
 
 export default function SectionNav() {

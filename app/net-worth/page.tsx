@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase'
 import SectionNav from '@/components/SectionNav'
 import NetWorthChart from '@/components/NetWorthChart'
+import { Field, inputStyle } from '@/components/FormField'
+import { todayStr } from '@/lib/dateRange'
 import {
   FinancialAccount,
   AccountBalance,
@@ -14,12 +16,6 @@ import {
   netWorthCurve,
   latestBalanceByAccount,
 } from '@/lib/networth'
-
-const todayStr = () => {
-  const d = new Date()
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-}
 
 const fmt = (n: number) =>
   n >= 0
@@ -474,26 +470,6 @@ function AccountColumn({
     </div>
   )
 }
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-      <label style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</label>
-      {children}
-    </div>
-  )
-}
-
-const inputStyle = (width: number): React.CSSProperties => ({
-  width,
-  padding: '8px 10px',
-  background: 'var(--surface2)',
-  border: '1px solid var(--border)',
-  borderRadius: 8,
-  color: 'var(--text)',
-  fontSize: 13,
-  outline: 'none',
-})
 
 const fmtShort = (n: number) =>
   `$${n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
